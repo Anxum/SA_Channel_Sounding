@@ -5,35 +5,65 @@ import scipy
 from mpl_toolkits.mplot3d import axes3d
 
 fs = 20e6
+batchsize = 2048
+capture_interval = 0.01
+folder = "../Messungen/Testmessungen"
+file = "capture_2022-06-01_10-38-59_3750MHz_20MSps_2048S_10ms.dat"
 
 
 if __name__ == "__main__":
-    f = numpy.fromfile(open('../Messungen/Testmessungen/capture_2022-06-01_10-38-59_3750MHz_20MSps_2048S_10ms.dat'), dtype=numpy.complex64)
+
+    data = numpy.fromfile(open(f"{folder}/{file}"), dtype=numpy.complex64)
     zc_seq = numpy.load('zc_sequence.npy')
-    #print(len(f))
-    data = f
-    corr = correlate(data, zc_seq, mode = "valid")
+
+    corr = correlate(data, zc_seq, mode = "full")
     corr_max = numpy.max(corr)
-    plt.plot(abs(corr))
-    #plt.show()
-    xpeaks = find_peaks(abs(corr), 0.01 * corr_max, distance = 200)[0]
-    xpeaks = xpeaks
-    ypeaks = []
-    for peak in xpeaks:
-        ypeaks.append(abs(corr[peak]))
-    plt.scatter(xpeaks, ypeaks)
+    start_of_first_batch = numpy.argmax(corr>corr_max*0.1)
+    print(f'The start of the batches is at {start_of_first_batch}')
+
+    recieved_power = []
+    number_of_batches = int( (len(data) - start_of_first_batch) / batchsize )
+    batches = []
+    for b in range(0,number_of_batches):
+        lower = start_of_first_batch + batchsize * b
+        upper = start_of_first_batch + batchsize * (b+1)
+        #calculate the recieved power
+        recieved_power.append(numpy.sum(abs(data[lower:upper]**2)))
+        #seperate the batches
+        batches.append(corr[lower:upper])
+    #print(len(batches))
+    #create a time axis
+    time = numpy.arange(0,capture_interval*number_of_batches, capture_interval)
+    #plot the recieved power over time
+    plt.plot(time, recieved_power)
+    plt.xlabel("Time in [s]")
+    plt.ylabel("Power of detected signal")
+    plt.ylim([0, numpy.max(recieved_power)*1.02])
     plt.show()
-    starting_peak = xpeaks[0]
+
     h_meas = []
-    batch = []
-    for peak in xpeaks:
-        if peak +256 < starting_peak + 2048:
-            batch.append(corr[peak-10:peak+118])
-        else:
-            h_meas.append(numpy.mean(batch, axis = 0))
+    b=0
+    for batch in batches:
+        batch_max = numpy.max(batch)
+        xpeaks = find_peaks(abs(batch), 0.9 * batch_max, distance = 200)[0]
+        ypeaks = []
+        h=[]
+        for peak in xpeaks:
+            peak_ =peak+b*batchsize
+            h.append(corr[peak_-10:peak_+118])
+        h_meas.append( numpy.mean(h[1:], axis =0))
+        b+=1
+    #starting_peak = xpeaks[0]
+    #h_meas = []
+    #batch = []
+    #for peak in xpeaks:
+        #if peak +256 < starting_peak + 2048:
+            #batch.append(corr[peak-10:peak+118])
+        #else:
+            #h_meas.append(numpy.mean(batch, axis = 0))
             #print(batch)
-            batch = [corr[peak-10:peak+118]]
-            starting_peak = peak
+            #batch = []
+            #starting_peak = peak
     #print(h_meas)
     T = [] # timevariant transferfunction
     for h in h_meas:
