@@ -1,7 +1,6 @@
 import numpy
 import matplotlib.pyplot as plt
-from scipy.signal import correlate, correlate2d, find_peaks
-import scipy
+from scipy.signal import correlate, find_peaks
 
 
 folder = "../Messungen/Testmessungen"
@@ -45,7 +44,7 @@ if __name__ == "__main__":
         recieved_power.append(numpy.sum(abs(data[lower:upper]**2)))
         #seperate the batches
         batches.append(corr[lower:upper])
-    #print(len(batches))
+
     #create a time axis
     time = numpy.arange(0,capture_interval*number_of_batches, capture_interval)
     #plot the recieved power over time
@@ -78,7 +77,7 @@ if __name__ == "__main__":
     B_coh_90 = []
     for t in range(len(T)):
         freq_corr_function = numpy.fft.fftshift( correlate(T[t],T[t], mode = "full") )
-        delta_x = 2*fs/len(freq_corr_function)
+        delta_x = 2*(fs/10**6)/len(freq_corr_function)
         freq_corr_max = abs( numpy.max(freq_corr_function) )
 
         x1 = ( numpy.argmax( abs(freq_corr_function) < 0.5 * freq_corr_max ))
@@ -91,16 +90,11 @@ if __name__ == "__main__":
         B_coh_90.append( linear_interpolation_x(0.9 * freq_corr_max, abs(freq_corr_function[x1]), abs(freq_corr_function[x0]), x1*delta_x, x0*delta_x) )
 
 
-    plt.plot(time, B_coh_50)
-    plt.plot(time, B_coh_90)
+    plt.plot(time, B_coh_50, "-b", label = 'B_coh_50%(t)' )
+    plt.plot(time, B_coh_90, "-r", label = 'B_coh_90%(t)' )
+    plt.xlabel("Time in [s]")
+    plt.ylabel("B_coh in [MHz]")
+    plt.legend(loc="best")
     plt.show()
-    #h_mean = numpy.mean(h_meas, axis = 0)
-    #H = scipy.fft(h_mean)
-    #H = numpy.fft.fftshift(H)
 
-    #plt.plot(freq,abs(H))
-    #plt.show()
-    #plt.plot(abs(h))
-    #plt.show()
-
-    #print(corr)
+    
