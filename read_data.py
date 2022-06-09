@@ -37,22 +37,31 @@ def read_meta_data(filename):
 
 if __name__ == "__main__":
     fc, fs, batchsize, capture_interval = read_meta_data(file)
-
     data = np.fromfile(open(f"{folder}/{file}"), dtype=np.complex64)
     zc_seq = np.load('zc_sequence.npy')
+    # TODO: Rechteckfelter, um Tp effekte zu anullieren
+    # TODO: Moving avrage über B_coh
+    # Todo: andere Szenarien testen, zB. 30-40 Mhz Bandbreite
+    # Todo: Zielband 1785 - 1805 MHz --> >20 MHz 30.72 MHz = LTE
+    #Todo: Revieved power in db
+    #TOdo: "anfang der Sequenz Algorithmus" ändern/entfernen
+    # TODO: Frequenzantworten bei den "komischen" Ausreißern ansehen --> Untersuchen der Störung
+    #TODO: Fixe Achsen bei den Plots zum Vergleich zwischen den Messungen (max BCoh = fs, Max T_coh = window size)
+    # TOdo: 3D-Frequenzplot von T(t,f)
+    #TODO: cfo correction - Paper siehe Nick
+
 
     corr = correlate(data, zc_seq, mode = "full")
     corr_max = np.max(corr)
-    start_of_first_batch = np.argmax(corr>corr_max*0.1)
 
     recieved_power = []
-    number_of_batches = int( (len(data) - start_of_first_batch) / batchsize )
+    number_of_batches = int( (len(data)) / batchsize ) #TODO: ovrflow check (number of batches not int)
     batches = []
     for b in range(0,number_of_batches):
-        lower = start_of_first_batch + batchsize * b
-        upper = start_of_first_batch + batchsize * (b+1)
+        lower = batchsize * b
+        upper = batchsize * (b+1)
         #calculate the recieved power
-        recieved_power.append(np.sum(abs(data[lower:upper]**2)))
+        recieved_power.append(np.sum(abs(data[lower:upper]**2)) / batchsize)
         #seperate the batches
         batches.append(corr[lower:upper])
 
@@ -123,15 +132,15 @@ if __name__ == "__main__":
     T = np.swapaxes(T,0,1)
     T_coh_50 = []
     T_coh_90 = []
-    resolution_in_time = 1 #100ms
-    batches_per_value = int(resolution_in_time/capture_interval)
+    windowsize_in_sec = 1 #1s
+    batches_per_value = int(windowsize_in_sec/capture_interval)
     for t in range (0, number_of_batches, batches_per_value):
         T_coh_50_f = []
         T_coh_90_f = []
         for f in range(len(T)):
             time_corr_function = np.fft.fftshift( correlate(T[f][t:t+batches_per_value],T[f][t:t+batches_per_value], mode = "full") )
 
-            delta_t = 2*resolution_in_time/len(time_corr_function)
+            delta_t = 2*windowsize_in_sec/len(time_corr_function)
             time_corr_max = abs( np.max(time_corr_function) )
 
             x1 = ( np.argmax( abs(time_corr_function) < 0.5 * time_corr_max ))
