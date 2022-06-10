@@ -4,6 +4,13 @@ from scipy.signal import correlate, find_peaks
 from scipy.stats import norm
 from mpl_toolkits.mplot3d import Axes3D
 
+fs = 0
+fc = 0
+batchsize = 0
+capture_interval = 0
+windowsize_in_sec = 1
+batches_per_value = 0
+number_of_batches = 0
 
 folder = "../Messungen/Testmessungen"
 file = "capture_2022-06-01_10-38-59_3750MHz_20MSps_2048S_10ms.dat"
@@ -20,8 +27,8 @@ def confidence_interval(data, percentage):
     var = np.var(data)
     n = len(data)
     sigma = norm.ppf(quantile)
-    HIB = sigma * np.sqrt(var/n)
-    return mean, np.array([mean - HIB, mean + HIB])
+    HIW = sigma * np.sqrt(var/n)
+    return mean, np.array([mean - HIW, mean + HIW])
 
 
 def read_meta_data(filename):
@@ -32,7 +39,7 @@ def read_meta_data(filename):
     capture_interval_ = int( str[6][0:str[6].find('ms')] ) * 10**-3
     print(f'Date of measurement = {str[1]}')
     print(f'Time of measurement = {str[2]}')
-    print(f'fc = {fc_ * 10**-6}MHz, fs = {fs_ * 10**-6}MHz, batchsize = {batchsize_}S, capture interval = {capture_interval_ * 10**3}ms')
+    print(f'fc = {fc_ * 10**-6} MHz, fs = {fs_ * 10**-6} MHz, batchsize = {batchsize_} S, capture interval = {capture_interval_ * 10**3} ms')
     return fc_, fs_, batchsize_, capture_interval_
 
 def moving_average(data, windowsize, stepsize = 1):
@@ -44,36 +51,24 @@ def moving_average(data, windowsize, stepsize = 1):
             avg_data.append(np.mean(data[n:n + windowsize]))
         return np.array(avg_data)
 
-
-if __name__ == "__main__":
-    fc, fs, batchsize, capture_interval = read_meta_data(file)
-    data = np.fromfile(open(f"{folder}/{file}"), dtype=np.complex64)
-    zc_seq = np.load('zc_sequence.npy')
-    # Todo: andere Szenarien testen, zB. 30-40 Mhz Bandbreite
-    # Todo: Zielband 1785 - 1805 MHz --> >20 MHz 30.72 MHz = LTE
-    # TODO: Frequenzantworten bei den "komischen" Ausreißern ansehen --> Untersuchen der Störung
-    # TODO: cfo correction - Paper siehe Nick
-    # TODO: T(t,f) in dB
-
-
-    corr = correlate(data, zc_seq, mode = "full")
-    corr_max = np.max(corr)
-
-    recieved_power = []
+def devide_in_batches(data, batchsize):
     if len(data) % batchsize:
         print("There has been an over or underflow. Please repeat the measurement!") # maybe raise an exception
     number_of_batches = int( (len(data)) / batchsize )
     batches = []
-    for b in range(0,number_of_batches):
+    for b in range(0, number_of_batches):
         lower = batchsize * b
         upper = batchsize * (b+1)
-        #calculate the recieved power
-        recieved_power.append(np.sum(abs(data[lower:upper]**2)) / batchsize)
         #seperate the batches
-        batches.append(corr[lower:upper])
+        batches.append(data[lower:upper])
+    return np.array(batches)
 
+def plot_recieved_power(batches, time):
+    recieved_power = []
+    for batch in batches:
+        recieved_power.append(np.sum(abs(batch**2)) / len(batch))
+    recieved_power = np.array(recieved_power)
     #create a time axis
-    time = np.arange(0,capture_interval*number_of_batches, capture_interval)
     recieved_power_dbfs = 10 * np.log10(recieved_power)
     #plot the recieved power over time
     plt.figure(num="P(t)")
@@ -81,30 +76,42 @@ if __name__ == "__main__":
     plt.xlabel("Time in [s]")
     plt.ylabel("Power of detected signal in [dBFS]")
     plt.title("Recieved signal power over time")
-    #plt.show()
 
-    h_meas = []
-    b=0
+def calculate_impulse_response(batches):
+    corr = []
     for batch in batches:
-        batch_max = np.max(batch)
-        xpeaks = find_peaks(abs(batch), 0.9 * batch_max, distance = 200)[0]
+        corr.append(correlate(batch, zc_seq, mode = "full"))
+    corr = np.array(corr)
+    h_mean = []
+    for c in corr:
+        c_max = np.max(abs(c))
+        xpeaks = find_peaks(abs(c), 0.9 * c_max, distance = 200)[0]
         h=[]
         for peak in xpeaks:
-            peak_ =peak + b*batchsize
-            h.append(corr[peak_-10:peak_+118])
-        h_meas.append( np.mean(h[1:], axis =0))
-        b+=1
-    h_meas = np.array(h_meas)
+            h.append(c[peak-10:peak+118])
+        h = np.array(h)
+        h_mean.append( np.mean(h, axis =0))
+    return np.array(h_mean)
+
+def plot_impulse_response(h, time, delay):
+    tau,t = np.meshgrid(delay, time)
+    fig = plt.figure(num = "h(t,delta_t)")
+    ax = fig.add_subplot(111, projection='3d')
+    ax.set_xlabel("Time in [s]")
+    ax.set_ylabel("Delay in [s]")
+    ax.set_zlabel("h(t,delta_t)")
+    ax.plot_surface(t, tau, abs(h), cmap="plasma")
+
+def calculate_timevariant_transferfunction(h, unusable_bins = 5):
 
     T = [] # timevariant transferfunction
-    for h in h_meas:
-        T.append(abs(np.fft.fftshift(np.fft.fft(h)))) # 128 point-fft
+    for h_ in h:
+        T.append(abs(np.fft.fftshift(np.fft.fft(h_)))) # 128 point-fft
     T = np.array(T)
     #Cut Lowpass filter effects away
-    T = T[:, 5:-5]
-    cutoff_frequency = (1 - ( (1-len(T[0])) / 128 ) *fs)/2
-    #create a frequency axis
-    frequency = np.linspace( -cutoff_frequency, cutoff_frequency, len(T[0]))
+    return T[:, unusable_bins:-unusable_bins]
+
+def plot_timevariant_transferfunction(T, time, frequency):
     f, t = np.meshgrid(frequency, time)
     #plot transferfunction over time and frequency
     fig = plt.figure(num = "T(t,f)")
@@ -114,77 +121,71 @@ if __name__ == "__main__":
     ax.set_zlabel("T(t,f)")
     ax.plot_surface(t, f, abs(T), cmap="plasma")
 
-
-
-    #B_coh
-    B_coh_50 = []
-    B_coh_90 = []
-    for t in range(len(T)):
-        freq_corr_function = np.fft.fftshift( correlate(T[t],T[t], mode = "full") )
+def calculate_B_coh(T, threshold, stepsize = 10):
+    if not 0<=threshold<=1:
+        print("threshold value has to be between 0 and 1")
+    B_coh = []
+    for t in T:
+        freq_corr_function = np.fft.fftshift( correlate(t,t, mode = "full") )
         delta_f = 2*(fs)/len(freq_corr_function)
         freq_corr_max = abs( np.max(freq_corr_function) )
 
-        x1 = ( np.argmax( abs(freq_corr_function) < 0.5 * freq_corr_max ))
-        B_coh_50.append( linear_interpolation_x(0.5 * freq_corr_max, abs(freq_corr_function[x1]), abs(freq_corr_function[x1 - 1]), x1, x1 - 1) * delta_f )
+        x1 = ( np.argmax( abs(freq_corr_function) < threshold * freq_corr_max ))
+        B_coh.append( linear_interpolation_x(threshold * freq_corr_max, abs(freq_corr_function[x1]), abs(freq_corr_function[x1 - 1]), x1, x1 - 1) * delta_f )
+    B_coh = np.array(B_coh)
+    return moving_average(B_coh, batches_per_value, stepsize)
 
-        x1 = ( np.argmax( abs(freq_corr_function) < 0.9 * freq_corr_max ))
-        B_coh_90.append( linear_interpolation_x(0.9 * freq_corr_max, abs(freq_corr_function[x1]), abs(freq_corr_function[x1 - 1]), x1, x1 - 1) * delta_f )
+def sinc_interp(x, s, u):
+    """
+    Source: https://gist.github.com/endolith/1297227#file-sinc_interp-py
 
-    #Moving average filter
-    windowsize_in_sec = 1
-    batches_per_value = round(windowsize_in_sec/capture_interval)
-    N = capture_interval * number_of_batches
-    M = batches_per_value * capture_interval
-    B_coh_50 = moving_average(B_coh_50, batches_per_value, 10)
-    B_coh_90 = moving_average(B_coh_90, batches_per_value, 10)
-    time = np.linspace(M/2, N-M/2, len(B_coh_50))
+    Interpolates x, sampled at "s" instants
+    Output y is sampled at "u" instants ("u" for "upsampled")
+
+    from Matlab:
+    http://phaseportrait.blogspot.com/2008/06/sinc-interpolation-in-matlab.html
+    """
+
+    if len(x) != len(s):
+        raise Exception( 'x and s must be the same length')
+
+    # Find the period
+    T = s[1] - s[0]
+
+    sincM = tile(u, (len(s), 1)) - tile(s[:, newaxis], (1, len(u)))
+    y = dot(x, sinc(sincM/T))
+    return y
+
+def plot_B_coh(b_50, b_90, time):
 
     plt.figure(num="B_coh(t)")
-    plt.plot(time, B_coh_50, "-b", label = 'B_coh_50%(t)' )
-    plt.plot(time, B_coh_90, "-r", label = 'B_coh_90%(t)' )
+    plt.plot(time, b_50, "-b", label = 'B_coh_50%(t)' )
+    plt.plot(time, b_90, "-r", label = 'B_coh_90%(t)' )
     plt.xlabel("Time in [s]")
     plt.ylabel("B_coh in [Hz]")
     plt.title("Coherence bandwidths over time with moving average filter applied")
     plt.ylim([0, fs])
     plt.legend(loc="best")
 
-    B_coh_50_mean, B_coh_50_conf_interval_999 = confidence_interval(B_coh_50, 0.999)
-    B_coh_90_mean, B_coh_90_conf_interval_999 = confidence_interval(B_coh_90, 0.999)
-    print(f'99.9% of values of B_coh_50 lie in between {B_coh_50_conf_interval_999}[Hz]')
-    print(f'99.9% of values of B_coh_90 lie in between {B_coh_90_conf_interval_999}[Hz]')
-
-    #T_coh
-
-    T = np.swapaxes(T,0,1)
-    T_coh_50 = []
-    T_coh_90 = []
-    windowsize_in_sec = 1
-    batches_per_value = round(windowsize_in_sec/capture_interval)
-    step_width_in_batches = 1 if batches_per_value/10 < 1 else  round(batches_per_value/10)
-    for t in range (0, int(number_of_batches-batches_per_value), step_width_in_batches):
-        T_coh_50_f = []
-        T_coh_90_f = []
-        for f in range(len(T)):
-            time_corr_function = np.fft.fftshift( correlate(T[f][t:t+batches_per_value],T[f][t:t+batches_per_value], mode = "full") )
+def calculate_T_coh(T_, threshold):
+    T = np.swapaxes(T_,0,1)
+    T_coh = []
+    stepsize = 1 if batches_per_value/10 < 1 else  round(batches_per_value/10)
+    for t in range (0, int(number_of_batches-batches_per_value), stepsize):
+        T_coh_f = []
+        for f in T:
+            time_corr_function = np.fft.fftshift( correlate(f[t:t+batches_per_value],f[t:t+batches_per_value], mode = "full") )
 
             delta_t = 2*windowsize_in_sec/len(time_corr_function)
             time_corr_max = abs( np.max(time_corr_function) )
 
-            x1 = ( np.argmax( abs(time_corr_function) < 0.5 * time_corr_max ))
-            T_coh_50_f.append(linear_interpolation_x(0.5 * time_corr_max, abs(time_corr_function[x1]), abs(time_corr_function[x1 - 1]), x1, x1 - 1) * delta_t )
+            x1 = ( np.argmax( abs(time_corr_function) < threshold * time_corr_max ))
+            T_coh_f.append(linear_interpolation_x(threshold * time_corr_max, abs(time_corr_function[x1]), abs(time_corr_function[x1 - 1]), x1, x1 - 1) * delta_t )
 
-            x1 = ( np.argmax( abs(time_corr_function) < 0.9 * time_corr_max ))
-            T_coh_90_f.append( linear_interpolation_x(0.9 * time_corr_max, abs(time_corr_function[x1]), abs(time_corr_function[x1 - 1]), x1, x1 - 1) * delta_t )
+        T_coh.append(np.mean(T_coh_f))
+    return np.array(T_coh)
 
-        T_coh_50.append(np.mean(T_coh_50_f))
-        T_coh_90.append(np.mean(T_coh_90_f))
-
-    T_coh_50_mean, T_coh_50_conf_interval_999 = confidence_interval(T_coh_50, 0.999)
-    T_coh_90_mean, T_coh_90_conf_interval_999 = confidence_interval(T_coh_90, 0.999)
-    print(f'99.9% of values of T_coh_50 lie in between {T_coh_50_conf_interval_999}[s]')
-    print(f'99.9% of values of T_coh_90 lie in between {T_coh_90_conf_interval_999}[s]')
-
-    time = np.linspace(windowsize_in_sec/2, number_of_batches * capture_interval-windowsize_in_sec/2, len(T_coh_50))
+def plot_T_coh(b_50, b_90, time):
     plt.figure(num="T_coh(t)")
     plt.plot(time, T_coh_50, "-b", label = 'T_coh_50%(t)' )
     plt.plot(time, T_coh_90, "-r", label = 'T_coh_90%(t)' )
@@ -193,4 +194,76 @@ if __name__ == "__main__":
     plt.ylim([0, windowsize_in_sec])
     plt.title("Coherence times over time")
     plt.legend(loc="best")
+
+
+
+if __name__ == "__main__":
+    fc, fs, batchsize, capture_interval = read_meta_data(file)
+    batches_per_value = round(windowsize_in_sec/capture_interval)
+    data = np.fromfile(open(f"{folder}/{file}"), dtype=np.complex64)
+    zc_seq = np.load('zc_sequence.npy')
+    # Todo: andere Szenarien testen, zB. 30-40 Mhz Bandbreite
+    # Todo: Zielband 1785 - 1805 MHz --> >20 MHz 30.72 MHz = LTE
+    # TODO: Frequenzantworten bei den "komischen" Ausreißern ansehen --> Untersuchen der Störung
+    # TODO: cfo correction - Paper siehe Nick
+    # TODO: T(t,f) in dB
+    batches = devide_in_batches(data, batchsize)
+    number_of_batches = len(batches)
+    time = np.arange(0,capture_interval*len(batches), capture_interval)
+
+    plot_recieved_power(batches, time)
+
+    h = calculate_impulse_response(batches)
+
+    delay = np.linspace(0, 128 / fs, np.shape(h)[1])
+
+    plot_impulse_response(h, time, delay)
+    #test = []
+    #for h in h_meas:
+        #test.append(abs(h[10]))
+    #test = np.array(test)
+    #plt.figure()
+    #plt.plot(test)
+
+    T = calculate_timevariant_transferfunction(h)
+
+    cutoff_frequency = (1 - ( (1-np.shape(T)[1]) / 128 ) *fs)/2
+
+    frequency = np.linspace( -cutoff_frequency, cutoff_frequency, np.shape(T)[1])
+
+    plot_timevariant_transferfunction(T, time, frequency)
+
+
+    B_coh_50 = calculate_B_coh(T, 0.5)
+    B_coh_90 = calculate_B_coh(T, 0.9)
+
+    N = capture_interval * len(batches)
+    M = batches_per_value * capture_interval
+    time = np.linspace(M/2, N-M/2, len(B_coh_50))
+    #Moving average filter
+
+    plot_B_coh(B_coh_50, B_coh_90, time)
+
+    B_coh_50_mean, B_coh_50_conf_interval_999 = confidence_interval(B_coh_50, 0.999)
+    B_coh_90_mean, B_coh_90_conf_interval_999 = confidence_interval(B_coh_90, 0.999)
+    print(f'99.9% of values of B_coh_50 lie in between {B_coh_50_conf_interval_999}[Hz]')
+    print(f'99.9% of values of B_coh_90 lie in between {B_coh_90_conf_interval_999}[Hz]')
+
+    #T_coh
+
+
+    windowsize_in_sec = 1
+    batches_per_value = round(windowsize_in_sec/capture_interval)
+    T_coh_50 = calculate_T_coh(T, 0.5)
+    T_coh_90 = calculate_T_coh(T, 0.9)
+
+    time = np.linspace(windowsize_in_sec/2, len(batches) * capture_interval-windowsize_in_sec/2, len(T_coh_50))
+
+    plot_T_coh(T_coh_50, T_coh_90, time)
+
+    T_coh_50_mean, T_coh_50_conf_interval_999 = confidence_interval(T_coh_50, 0.999)
+    T_coh_90_mean, T_coh_90_conf_interval_999 = confidence_interval(T_coh_90, 0.999)
+    print(f'99.9% of values of T_coh_50 lie in between {T_coh_50_conf_interval_999}[s]')
+    print(f'99.9% of values of T_coh_90 lie in between {T_coh_90_conf_interval_999}[s]')
+
     plt.show()
