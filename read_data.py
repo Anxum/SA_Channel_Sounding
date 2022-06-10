@@ -35,6 +35,15 @@ def read_meta_data(filename):
     print(f'fc = {fc_ * 10**-6}MHz, fs = {fs_ * 10**-6}MHz, batchsize = {batchsize_}S, capture interval = {capture_interval_ * 10**3}ms')
     return fc_, fs_, batchsize_, capture_interval_
 
+def moving_average(data, windowsize, stepsize = 1):
+    if stepsize < 1 or stepsize > windowsize:
+        print("The stepsize should be between 1 and the windowsize")
+    else:
+        avg_data = []
+        for n in range(0, len(data)-windowsize, stepsize):
+            avg_data.append(np.mean(data[n:n + windowsize]))
+        return np.array(avg_data)
+
 
 if __name__ == "__main__":
     fc, fs, batchsize, capture_interval = read_meta_data(file)
@@ -126,8 +135,8 @@ if __name__ == "__main__":
     batches_per_value = round(windowsize_in_sec/capture_interval)
     N = capture_interval * number_of_batches
     M = batches_per_value * capture_interval
-    B_coh_50 = np.convolve(B_coh_50, np.ones(batches_per_value)/batches_per_value, mode = 'valid')
-    B_coh_90 = np.convolve(B_coh_90, np.ones(batches_per_value)/batches_per_value, mode = 'valid')
+    B_coh_50 = moving_average(B_coh_50, batches_per_value, 10)
+    B_coh_90 = moving_average(B_coh_90, batches_per_value, 10)
     time = np.linspace(M/2, N-M/2, len(B_coh_50))
 
     plt.figure(num="B_coh(t)")
