@@ -43,7 +43,8 @@ if __name__ == "__main__":
     # Todo: andere Szenarien testen, zB. 30-40 Mhz Bandbreite
     # Todo: Zielband 1785 - 1805 MHz --> >20 MHz 30.72 MHz = LTE
     # TODO: Frequenzantworten bei den "komischen" Ausreißern ansehen --> Untersuchen der Störung
-    #TODO: cfo correction - Paper siehe Nick
+    # TODO: cfo correction - Paper siehe Nick
+    # TODO: T(t,f) in dB
 
 
     corr = correlate(data, zc_seq, mode = "full")
@@ -150,7 +151,8 @@ if __name__ == "__main__":
     T_coh_90 = []
     windowsize_in_sec = 1
     batches_per_value = round(windowsize_in_sec/capture_interval)
-    for t in range (0, number_of_batches, batches_per_value):
+    step_width_in_batches = 1 if batches_per_value/10 < 1 else  round(batches_per_value/10)
+    for t in range (0, int(number_of_batches-batches_per_value), step_width_in_batches):
         T_coh_50_f = []
         T_coh_90_f = []
         for f in range(len(T)):
@@ -168,7 +170,12 @@ if __name__ == "__main__":
         T_coh_50.append(np.mean(T_coh_50_f))
         T_coh_90.append(np.mean(T_coh_90_f))
 
-    time = np.arange(0, number_of_batches * capture_interval, windowsize_in_sec)
+    T_coh_50_mean, T_coh_50_conf_interval_999 = confidence_interval(T_coh_50, 0.999)
+    T_coh_90_mean, T_coh_90_conf_interval_999 = confidence_interval(T_coh_90, 0.999)
+    print(f'99.9% of values of T_coh_50 lie in between {T_coh_50_conf_interval_999}[s]')
+    print(f'99.9% of values of T_coh_90 lie in between {T_coh_90_conf_interval_999}[s]')
+
+    time = np.linspace(windowsize_in_sec/2, number_of_batches * capture_interval-windowsize_in_sec/2, len(T_coh_50))
     plt.figure(num="T_coh(t)")
     plt.plot(time, T_coh_50, "-b", label = 'T_coh_50%(t)' )
     plt.plot(time, T_coh_90, "-r", label = 'T_coh_90%(t)' )
