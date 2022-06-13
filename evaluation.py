@@ -135,26 +135,26 @@ def calculate_B_coh(T, threshold, stepsize = 10):
     B_coh = np.array(B_coh)
     return moving_average(B_coh, batches_per_value, stepsize)
 
-def sinc_interp(x, s, u):
-    """
-    Source: https://gist.github.com/endolith/1297227#file-sinc_interp-py
+def cfo_correction(function, t_axis, upsampled_axis):
 
-    Interpolates x, sampled at "s" instants
-    Output y is sampled at "u" instants ("u" for "upsampled")
+    T_ = t_axis[1]-t_axis[0]
+    upsampled_function = np.zeros(np.shape(upsampled_axis))
+    for n in range(len(function)):
+        upsampled_function = np.add(upsampled_function, function[n]*np.sinc(upsampled_axis/T_-n))
+    np.array(upsampled_function)
+    max1 = np.argmax(abs(function))
+    max2 = np.argmax(abs(upsampled_function))
+    offset =  max2 - max1 * upsample_factor
+    print(offset)
+    negative_offset = offset < 0
+    if negative_offset :
+        offset = offset + upsample_factor
 
-    from Matlab:
-    http://phaseportrait.blogspot.com/2008/06/sinc-interpolation-in-matlab.html
-    """
-
-    if len(x) != len(s):
-        raise Exception( 'x and s must be the same length')
-
-    # Find the period
-    T = s[1] - s[0]
-
-    sincM = tile(u, (len(s), 1)) - tile(s[:, newaxis], (1, len(u)))
-    y = dot(x, sinc(sincM/T))
-    return y
+    new_h = np.array( upsampled_function[ offset :: upsample_factor])
+    if negative_offset:
+        new_h = np.roll(new_h, 1)
+        new_h[0] = 0
+    return new_h
 
 def plot_B_coh(b_50, b_90, time):
 
@@ -198,49 +198,39 @@ def plot_T_coh(b_50, b_90, time):
 
 
 if __name__ == "__main__":
+
+        # Todo: andere Szenarien testen, zB. 30-40 Mhz Bandbreite
+        # Todo: Zielband 1785 - 1805 MHz --> >20 MHz 30.72 MHz = LTE
+        # TODO: Frequenzantworten bei den "komischen" Ausreißern ansehen --> Untersuchen der Störung
+        # TODO: cfo correction - Paper siehe Nick
+        # TODO: T(t,f) in dB
+
     fc, fs, batchsize, capture_interval = read_meta_data(file)
     batches_per_value = round(windowsize_in_sec/capture_interval)
     data = np.fromfile(open(f"{folder}/{file}"), dtype=np.complex64)
     zc_seq = np.load('zc_sequence.npy')
-    # Todo: andere Szenarien testen, zB. 30-40 Mhz Bandbreite
-    # Todo: Zielband 1785 - 1805 MHz --> >20 MHz 30.72 MHz = LTE
-    # TODO: Frequenzantworten bei den "komischen" Ausreißern ansehen --> Untersuchen der Störung
-    # TODO: cfo correction - Paper siehe Nick
-    # TODO: T(t,f) in dB
+
     batches = devide_in_batches(data, batchsize)
     number_of_batches = len(batches)
     time = np.arange(0,capture_interval*len(batches), capture_interval)
-
     plot_recieved_power(batches, time)
 
     h = calculate_impulse_response(batches)
-
+    np.save("impulse_response", h)
     delay = np.linspace(0, 128 / fs, np.shape(h)[1])
-
     plot_impulse_response(h, time, delay)
-    #test = []
-    #for h in h_meas:
-        #test.append(abs(h[10]))
-    #test = np.array(test)
-    #plt.figure()
-    #plt.plot(test)
 
     T = calculate_timevariant_transferfunction(h)
-
     cutoff_frequency = (1 - ( (1-np.shape(T)[1]) / 128 ) *fs)/2
-
     frequency = np.linspace( -cutoff_frequency, cutoff_frequency, np.shape(T)[1])
-
     plot_timevariant_transferfunction(T, time, frequency)
-
 
     B_coh_50 = calculate_B_coh(T, 0.5)
     B_coh_90 = calculate_B_coh(T, 0.9)
 
-    N = capture_interval * len(batches)
-    M = batches_per_value * capture_interval
-    time = np.linspace(M/2, N-M/2, len(B_coh_50))
-    #Moving average filter
+    signal_time = capture_interval * len(batches)
+    time_of_movavg_filter = batches_per_value * capture_interval
+    time = np.linspace(time_of_movavg_filter/2, signal_time-time_of_movavg_filter/2, len(B_coh_50))
 
     plot_B_coh(B_coh_50, B_coh_90, time)
 
@@ -250,14 +240,12 @@ if __name__ == "__main__":
     print(f'99.9% of values of B_coh_90 lie in between {B_coh_90_conf_interval_999}[Hz]')
 
     #T_coh
-
-
     windowsize_in_sec = 1
     batches_per_value = round(windowsize_in_sec/capture_interval)
     T_coh_50 = calculate_T_coh(T, 0.5)
     T_coh_90 = calculate_T_coh(T, 0.9)
 
-    time = np.linspace(windowsize_in_sec/2, len(batches) * capture_interval-windowsize_in_sec/2, len(T_coh_50))
+    time = np.linspace(windowsize_in_sec/2, signal_time - windowsize_in_sec/2, len(T_coh_50))
 
     plot_T_coh(T_coh_50, T_coh_90, time)
 
