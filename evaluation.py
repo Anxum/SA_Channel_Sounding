@@ -12,8 +12,8 @@ windowsize_in_sec = 1
 batches_per_value = 0
 number_of_batches = 0
 
-folder = "../Messungen/Testmessungen"
-file = "capture_2022-06-01_10-38-59_3750MHz_20MSps_2048S_10ms.dat"
+folder = "../Messungen/Testmessungen/1795_MHz_10MHz_NLOS_after_5s"
+file = "capture_2022-06-14_17-59-43_1795MHz_10MSps_1024S_10ms.dat"
 
 def linear_interpolation_x(y,y1,y0,x1,x0):
     if not y0 >= y >= y1 and not y0 <= y <= y1:
@@ -66,9 +66,8 @@ def devide_in_batches(data, batchsize):
 def plot_recieved_power(batches, time):
     recieved_power = []
     for batch in batches:
-        recieved_power.append(np.sum(abs(batch**2)) / len(batch))
+        recieved_power.append(np.sum(abs(batch**2)) / batchsize)
     recieved_power = np.array(recieved_power)
-    #create a time axis
     recieved_power_dbfs = 10 * np.log10(recieved_power)
     #plot the recieved power over time
     plt.figure(num="P(t)")
@@ -135,8 +134,9 @@ def calculate_B_coh(T, threshold, stepsize = 10):
     B_coh = np.array(B_coh)
     return moving_average(B_coh, batches_per_value, stepsize)
 
-def cfo_correction(function, t_axis, upsampled_axis):
+def cfo_correction(function, t_axis, upsample_factor):
 
+    upsampled_axis = np.linspace(t_axis[0], t_axis[-1], len(t_axis) * upsample_factor)
     T_ = t_axis[1]-t_axis[0]
     upsampled_function = np.zeros(np.shape(upsampled_axis))
     for n in range(len(function)):
@@ -145,7 +145,6 @@ def cfo_correction(function, t_axis, upsampled_axis):
     max1 = np.argmax(abs(function))
     max2 = np.argmax(abs(upsampled_function))
     offset =  max2 - max1 * upsample_factor
-    print(offset)
     negative_offset = offset < 0
     if negative_offset :
         offset = offset + upsample_factor
@@ -202,7 +201,6 @@ if __name__ == "__main__":
         # Todo: andere Szenarien testen, zB. 30-40 Mhz Bandbreite
         # Todo: Zielband 1785 - 1805 MHz --> >20 MHz 30.72 MHz = LTE
         # TODO: Frequenzantworten bei den "komischen" Ausreißern ansehen --> Untersuchen der Störung
-        # TODO: cfo correction - Paper siehe Nick
         # TODO: T(t,f) in dB
 
     fc, fs, batchsize, capture_interval = read_meta_data(file)
@@ -216,8 +214,10 @@ if __name__ == "__main__":
     plot_recieved_power(batches, time)
 
     h = calculate_impulse_response(batches)
-    np.save("impulse_response", h)
     delay = np.linspace(0, 128 / fs, np.shape(h)[1])
+    h_cfo_corrected = []
+    for h_ in h:
+        h_cfo_corrected.append(cfo_correction(h_, delay, 10))
     plot_impulse_response(h, time, delay)
 
     T = calculate_timevariant_transferfunction(h)
