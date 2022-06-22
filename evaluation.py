@@ -1,6 +1,6 @@
 import numpy as np
 import matplotlib.pyplot as plt
-from scipy.signal import correlate, find_peaks
+from scipy.signal import find_peaks
 from scipy.stats import norm
 from mpl_toolkits.mplot3d import Axes3D
 
@@ -12,8 +12,8 @@ windowsize_in_sec = 1
 batches_per_value = 0
 number_of_batches = 0
 
-folder = "../Messungen/Testmessungen/1795_MHz_10MHz_NLOS_after_5s"
-file = "capture_2022-06-14_17-59-43_1795MHz_10MSps_1024S_10ms.dat"
+folder = "../Messungen/Testmessungen/1795_MHz_40MHz"
+file = "capture_2022-06-14_17-51-25_1795MHz_40MSps_4096S_10ms.dat"
 
 def linear_interpolation_x(y,y1,y0,x1,x0):
     if not y0 >= y >= y1 and not y0 <= y <= y1:
@@ -30,6 +30,9 @@ def confidence_interval(data, percentage):
     HIW = sigma * np.sqrt(var/n)
     return mean, np.array([mean - HIW, mean + HIW])
 
+def cyclic_correlate(a, v):
+    arr = np.tile(np.fft.fftshift(a), 2)
+    return np.correlate(arr, v, mode = "valid")
 
 def read_meta_data(filename):
     str = filename.split('_')
@@ -56,7 +59,7 @@ def devide_in_batches(data, batchsize):
         print("There has been an over or underflow. Please repeat the measurement!") # maybe raise an exception
     number_of_batches = int( (len(data)) / batchsize )
     batches = []
-    for b in range(0, number_of_batches):
+    for b in range(number_of_batches):
         lower = batchsize * b
         upper = batchsize * (b+1)
         #seperate the batches
@@ -72,87 +75,131 @@ def plot_recieved_power(batches, time):
     #plot the recieved power over time
     plt.figure(num="P(t)")
     plt.plot(time, recieved_power_dbfs)
-    plt.xlabel("Time in [s]")
-    plt.ylabel("Power of detected signal in [dBFS]")
-    plt.title("Recieved signal power over time")
+    plt.xlabel("Time [s]")
+    plt.ylabel("Power of detected signal [dBFS]")
+    plt.ylim([-80, 0])
+    plt.title("Received signal power over time")
 
-def calculate_impulse_response(batches):
+def calculate_impulse_response(batches, delay):
     corr = []
     for batch in batches:
-        corr.append(correlate(batch, zc_seq, mode = "full"))
+        corr.append(np.correlate(batch, zc_seq, mode = "full")/batchsize)
     corr = np.array(corr)
     h_mean = []
     for c in corr:
+        c_corrected = cfo_correction(c, 10, fs)
         c_max = np.max(abs(c))
         xpeaks = find_peaks(abs(c), 0.9 * c_max, distance = 200)[0]
         h=[]
         for peak in xpeaks:
-            h.append(c[peak-10:peak+118])
+            h_ = c[peak-10:peak+118]
+            h.append(h_)
         h = np.array(h)
-        h_mean.append( np.mean(h, axis =0))
+        try:
+            h_mean.append( np.mean(h, axis =0))
+        except:
+            for i in h:
+                plt.plot(abs(i))
+            plt.show()
     return np.array(h_mean)
 
 def plot_impulse_response(h, time, delay):
     tau,t = np.meshgrid(delay, time)
     fig = plt.figure(num = "h(t,delta_t)")
     ax = fig.add_subplot(111, projection='3d')
-    ax.set_xlabel("Time in [s]")
-    ax.set_ylabel("Delay in [s]")
+    ax.set_xlabel("Time [s]")
+    ax.set_ylabel("Delay [s]")
     ax.set_zlabel("h(t,delta_t)")
     ax.plot_surface(t, tau, abs(h), cmap="plasma")
 
-def calculate_timevariant_transferfunction(h, unusable_bins = 5):
-
+def calculate_timevariant_transferfunction(h, usable_bandwidth = 20e6):
     T = [] # timevariant transferfunction
     for h_ in h:
-        T.append(abs(np.fft.fftshift(np.fft.fft(h_)))) # 128 point-fft
+        T.append(abs(np.fft.fftshift(np.fft.fft(h_, norm = "ortho")))) # 128 point-fft
     T = np.array(T)
-    #Cut Lowpass filter effects away
-    return T[:, unusable_bins:-unusable_bins]
+    #Cut Lowpass filter effects away to 20 MHz
+    if usable_bandwidth < fs:
+        unusable_bins = round(64 * (1-usable_bandwidth/fs))
+        T = T[:, unusable_bins:-unusable_bins]
+    return T
 
 def plot_timevariant_transferfunction(T, time, frequency):
     f, t = np.meshgrid(frequency, time)
     #plot transferfunction over time and frequency
-    fig = plt.figure(num = "T(t,f)")
+    fig = plt.figure(num = "T(t,f) [dBFS]")
     ax = fig.add_subplot(111, projection='3d')
-    ax.set_xlabel("Time in [s]")
-    ax.set_ylabel("Frequency in [Hz]")
-    ax.set_zlabel("T(t,f)")
-    ax.plot_surface(t, f, abs(T), cmap="plasma")
+    ax.set_xlabel("Time [s]")
+    ax.set_ylabel("Frequency [Hz]")
+    ax.set_zlabel("T(t,f) [dBFS]")
+    ax.plot_surface(t, f, 10*np.log10(abs(T)), cmap="plasma")
 
 def calculate_B_coh(T, threshold, stepsize = 10):
     if not 0<=threshold<=1:
         print("threshold value has to be between 0 and 1")
     B_coh = []
     for t in T:
-        freq_corr_function = np.fft.fftshift( correlate(t,t, mode = "full") )
-        delta_f = 2*(fs)/len(freq_corr_function)
+        freq_corr_function = np.fft.fftshift( cyclic_correlate(t,t) )
         freq_corr_max = abs( np.max(freq_corr_function) )
 
-        x1 = ( np.argmax( abs(freq_corr_function) < threshold * freq_corr_max ))
-        B_coh.append( linear_interpolation_x(threshold * freq_corr_max, abs(freq_corr_function[x1]), abs(freq_corr_function[x1 - 1]), x1, x1 - 1) * delta_f )
+        x = ( np.argmax( abs(freq_corr_function) < threshold * freq_corr_max ))
+        if np.min(abs(freq_corr_function) > threshold * freq_corr_max ):
+            B_coh.append(fs)
+        else:
+            B_coh.append(x * 2*(fs)/len(freq_corr_function))
+
+        #B_coh.append( linear_interpolation_x(threshold * freq_corr_max, abs(freq_corr_function[x1]), abs(freq_corr_function[x1 - 1]), x1, x1 - 1) * delta_f )
     B_coh = np.array(B_coh)
     return moving_average(B_coh, batches_per_value, stepsize)
 
-def cfo_correction(function, t_axis, upsample_factor):
-
-    upsampled_axis = np.linspace(t_axis[0], t_axis[-1], len(t_axis) * upsample_factor)
-    T_ = t_axis[1]-t_axis[0]
-    upsampled_function = np.zeros(np.shape(upsampled_axis))
-    for n in range(len(function)):
-        upsampled_function = np.add(upsampled_function, function[n]*np.sinc(upsampled_axis/T_-n))
-    np.array(upsampled_function)
-    max1 = np.argmax(abs(function))
-    max2 = np.argmax(abs(upsampled_function))
-    offset =  max2 - max1 * upsample_factor
-    negative_offset = offset < 0
-    if negative_offset :
-        offset = offset + upsample_factor
-
-    new_h = np.array( upsampled_function[ offset :: upsample_factor])
-    if negative_offset:
-        new_h = np.roll(new_h, 1)
-        new_h[0] = 0
+def cfo_correction(x, upsample_factor, target_frequency):
+    '''
+    Source for sinc interpolation: https://gist.github.com/endolith/1297227#file-sinc_interp-py
+    '''
+    s = np.arange(0, len(x)/target_frequency, 1/target_frequency)
+    u = np.arange(0, len(x)/target_frequency, 1/(target_frequency*upsample_factor))
+    T = 1/target_frequency
+    sincM = np.tile(u, (len(x), 1)) - np.tile(s[:,None], (1, len(u)))
+    upsampled_function = np.dot(x, np.sinc(sincM/T))
+    f_max = np.max(abs(upsampled_function))
+    xpeaks = find_peaks(abs(upsampled_function), 0.9 * f_max, distance = 200)[0]
+    diff_mean = np.mean(np.diff(xpeaks))
+    # max1 = np.argmax(abs(function))
+    # max2 = np.argmax(abs(upsampled_function))
+    # offset =  max2 - max1 * upsample_factor
+    # while offset < 0:
+    #     offset = offset + upsample_factor
+    # while offset > upsample_factor:
+    #     offset = offset - upsample_factor
+    plt.figure()
+    plt.plot(abs(upsampled_function))
+    new_h = np.array( upsampled_function[:: upsample_factor])
+    plt.figure()
+    plt.plot(abs(new_h))
+    plt.plot(abs(x))
+    plt.show()
+    # if np.shape(new_h)[0] != 128:
+    #      print(f'len(new_h) = {np.shape(new_h)[0]}')
+    #      print(f'len(upsampled_function) = {np.shape(upsampled_function)[0]}')
+    #      print(f'upsample_factor = {upsample_factor}')
+    #      print(f'offset = {offset}')
+    new_max = np.argmax(abs(new_h))
+    if new_max != max1:
+        diff = max1 - new_max
+        new_h = np.roll(new_h, diff)
+        if diff>0:
+            new_h[:diff] = 0
+        else:
+            new_h[diff:] = 0
+    new_max = np.argmax(abs(new_h))
+    # if new_h[new_max] != upsampled_function[max2]:
+    #     print(new_h[new_max])
+    #     print(upsampled_function[max2])
+    # if new_max != max1:
+    #     print(new_max, max1)
+    #     plt.figure()
+    #     plt.plot(abs(new_h))
+    #     plt.plot(abs(function))
+    #     plt.show()
     return new_h
 
 def plot_B_coh(b_50, b_90, time):
@@ -160,10 +207,10 @@ def plot_B_coh(b_50, b_90, time):
     plt.figure(num="B_coh(t)")
     plt.plot(time, b_50, "-b", label = 'B_coh_50%(t)' )
     plt.plot(time, b_90, "-r", label = 'B_coh_90%(t)' )
-    plt.xlabel("Time in [s]")
-    plt.ylabel("B_coh in [Hz]")
+    plt.xlabel("Time [s]")
+    plt.ylabel("B_coh [Hz]")
     plt.title("Coherence bandwidths over time with moving average filter applied")
-    plt.ylim([0, fs])
+    plt.ylim([0, 1.02*fs])
     plt.legend(loc="best")
 
 def calculate_T_coh(T_, threshold):
@@ -173,13 +220,15 @@ def calculate_T_coh(T_, threshold):
     for t in range (0, int(number_of_batches-batches_per_value), stepsize):
         T_coh_f = []
         for f in T:
-            time_corr_function = np.fft.fftshift( correlate(f[t:t+batches_per_value],f[t:t+batches_per_value], mode = "full") )
-
-            delta_t = 2*windowsize_in_sec/len(time_corr_function)
+            time_corr_function = np.fft.fftshift( cyclic_correlate(f[t:t+batches_per_value],f[t:t+batches_per_value]) )
             time_corr_max = abs( np.max(time_corr_function) )
 
-            x1 = ( np.argmax( abs(time_corr_function) < threshold * time_corr_max ))
-            T_coh_f.append(linear_interpolation_x(threshold * time_corr_max, abs(time_corr_function[x1]), abs(time_corr_function[x1 - 1]), x1, x1 - 1) * delta_t )
+            x = ( np.argmax( abs(time_corr_function) < threshold * time_corr_max ))
+            if np.min(abs(time_corr_function) > threshold * time_corr_max ):
+                T_coh_f.append(windowsize_in_sec)
+            else:
+                T_coh_f.append(x * 2*windowsize_in_sec/len(time_corr_function))
+            #T_coh_f.append(linear_interpolation_x(threshold * time_corr_max, abs(time_corr_function[x1]), abs(time_corr_function[x1 - 1]), x1, x1 - 1) * delta_t )
 
         T_coh.append(np.mean(T_coh_f))
     return np.array(T_coh)
@@ -188,9 +237,9 @@ def plot_T_coh(b_50, b_90, time):
     plt.figure(num="T_coh(t)")
     plt.plot(time, T_coh_50, "-b", label = 'T_coh_50%(t)' )
     plt.plot(time, T_coh_90, "-r", label = 'T_coh_90%(t)' )
-    plt.xlabel("Time in [s]")
-    plt.ylabel("T_coh in [s]")
-    plt.ylim([0, windowsize_in_sec])
+    plt.xlabel("Time [s]")
+    plt.ylabel("T_coh [s]")
+    plt.ylim([0, 1.02 * windowsize_in_sec])
     plt.title("Coherence times over time")
     plt.legend(loc="best")
 
@@ -198,10 +247,7 @@ def plot_T_coh(b_50, b_90, time):
 
 if __name__ == "__main__":
 
-        # Todo: andere Szenarien testen, zB. 30-40 Mhz Bandbreite
-        # Todo: Zielband 1785 - 1805 MHz --> >20 MHz 30.72 MHz = LTE
-        # TODO: Frequenzantworten bei den "komischen" Ausreißern ansehen --> Untersuchen der Störung
-        # TODO: T(t,f) in dB
+        # TODO: Szenarien mit 30, validieren mit synthetischen Daten(bekannte Kohärenz BB, Kohärenzzseit Siehe Matlab)
 
     fc, fs, batchsize, capture_interval = read_meta_data(file)
     batches_per_value = round(windowsize_in_sec/capture_interval)
@@ -213,11 +259,9 @@ if __name__ == "__main__":
     time = np.arange(0,capture_interval*len(batches), capture_interval)
     plot_recieved_power(batches, time)
 
-    h = calculate_impulse_response(batches)
-    delay = np.linspace(0, 128 / fs, np.shape(h)[1])
-    h_cfo_corrected = []
-    for h_ in h:
-        h_cfo_corrected.append(cfo_correction(h_, delay, 10))
+    delay = np.linspace(0, 128 / fs, 128)
+    h = calculate_impulse_response(batches, delay)
+
     plot_impulse_response(h, time, delay)
 
     T = calculate_timevariant_transferfunction(h)
