@@ -12,8 +12,9 @@ windowsize_in_sec = 1
 batches_per_value = 0
 number_of_batches = 0
 
-folder = "../Messungen/Testmessungen/1795_MHz_40MHz"
-file = "capture_2022-06-14_17-51-25_1795MHz_40MSps_4096S_10ms.dat"
+folder = "../Messungen/Testmessungen/1795_MHz_30.72MHz"
+file = "capture_2022-06-14_17-55-12_1795MHz_30MSps_3072S_10ms.dat"
+# TODO UMTS Antenne Patchantenne / Chipantenne recherchieren
 
 def linear_interpolation_x(y,y1,y0,x1,x0):
     if not y0 >= y >= y1 and not y0 <= y <= y1:
@@ -86,8 +87,9 @@ def calculate_impulse_response(batches, delay):
         corr.append(np.correlate(batch, zc_seq, mode = "full")/batchsize)
     corr = np.array(corr)
     h_mean = []
+    sincM = sinc_interp(np.shape(corr)[1], 10)
     for c in corr:
-        c_corrected = cfo_correction(c, 10, fs)
+        c_corrected = cfo_correction(c, sincM)
         c_max = np.max(abs(c))
         xpeaks = find_peaks(abs(c), 0.9 * c_max, distance = 200)[0]
         h=[]
@@ -151,18 +153,26 @@ def calculate_B_coh(T, threshold, stepsize = 10):
     B_coh = np.array(B_coh)
     return moving_average(B_coh, batches_per_value, stepsize)
 
-def cfo_correction(x, upsample_factor, target_frequency):
+def sinc_interp(x_len, upsample_factor):
     '''
-    Source for sinc interpolation: https://gist.github.com/endolith/1297227#file-sinc_interp-py
+    Modified sinc interpolation from this source: https://gist.github.com/endolith/1297227#file-sinc_interp-py
     '''
-    s = np.arange(0, len(x)/target_frequency, 1/target_frequency)
-    u = np.arange(0, len(x)/target_frequency, 1/(target_frequency*upsample_factor))
-    T = 1/target_frequency
-    sincM = np.tile(u, (len(x), 1)) - np.tile(s[:,None], (1, len(u)))
-    upsampled_function = np.dot(x, np.sinc(sincM/T))
+    s = np.arange(0, x_len* upsample_factor, upsample_factor)
+    u = np.arange(x_len* upsample_factor, 2 * x_len* upsample_factor)
+    sinc_idx = np.tile(u, (x_len, 1)) - np.tile(s[:,np.newaxis], (1, len(u)))
+    u_sinc = np.arange(-x_len, x_len, 1/(upsample_factor))
+    sinc = np.sinc(u_sinc)
+    return sinc[sinc_idx]
+
+def cfo_correction(x, sincM):
+    upsampled_function = np.dot(x,sincM)
     f_max = np.max(abs(upsampled_function))
     xpeaks = find_peaks(abs(upsampled_function), 0.9 * f_max, distance = 200)[0]
-    diff_mean = np.mean(np.diff(xpeaks))
+    corrected_diff = np.mean(np.diff(xpeaks)) / 256
+    resampled_axis = np.rint(np.arange(0, len(upsampled_function), corrected_diff)).astype(int)
+    new_h = upsampled_function[resampled_axis]
+    if not corrected_diff == 10.0:
+        print(resampled_axis)
     # max1 = np.argmax(abs(function))
     # max2 = np.argmax(abs(upsampled_function))
     # offset =  max2 - max1 * upsample_factor
@@ -170,27 +180,26 @@ def cfo_correction(x, upsample_factor, target_frequency):
     #     offset = offset + upsample_factor
     # while offset > upsample_factor:
     #     offset = offset - upsample_factor
-    plt.figure()
-    plt.plot(abs(upsampled_function))
-    new_h = np.array( upsampled_function[:: upsample_factor])
-    plt.figure()
-    plt.plot(abs(new_h))
-    plt.plot(abs(x))
-    plt.show()
+    #plt.figure()
+    #plt.plot(abs(upsampled_function))
+    #plt.figure()
+    #plt.plot(abs(new_h))
+    #plt.plot(abs(x))
+    #plt.show()
     # if np.shape(new_h)[0] != 128:
     #      print(f'len(new_h) = {np.shape(new_h)[0]}')
     #      print(f'len(upsampled_function) = {np.shape(upsampled_function)[0]}')
     #      print(f'upsample_factor = {upsample_factor}')
     #      print(f'offset = {offset}')
-    new_max = np.argmax(abs(new_h))
-    if new_max != max1:
-        diff = max1 - new_max
-        new_h = np.roll(new_h, diff)
-        if diff>0:
-            new_h[:diff] = 0
-        else:
-            new_h[diff:] = 0
-    new_max = np.argmax(abs(new_h))
+    # new_max = np.argmax(abs(new_h))
+    # if new_max != max1:
+    #     diff = max1 - new_max
+    #     new_h = np.roll(new_h, diff)
+    #     if diff>0:
+    #         new_h[:diff] = 0
+    #     else:
+    #         new_h[diff:] = 0
+    # new_max = np.argmax(abs(new_h))
     # if new_h[new_max] != upsampled_function[max2]:
     #     print(new_h[new_max])
     #     print(upsampled_function[max2])
