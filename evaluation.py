@@ -1,6 +1,6 @@
 import numpy as np
 import matplotlib.pyplot as plt
-from scipy.signal import find_peaks
+from scipy.signal import find_peaks, resample
 from scipy.stats import norm
 from mpl_toolkits.mplot3d import Axes3D
 
@@ -12,8 +12,8 @@ windowsize_in_sec = 1
 batches_per_value = 0
 number_of_batches = 0
 
-folder = "../Messungen/Testmessungen/1795_MHz_30.72MHz"
-file = "capture_2022-06-14_17-55-12_1795MHz_30MSps_3072S_10ms.dat"
+folder = "../Messungen/Testmessungen/1795_MHz_10MHz_TX_movement"
+file = "capture_2022-06-14_17-45-49_1795MHz_10MSps_1024S_10ms.dat"
 # TODO UMTS Antenne Patchantenne / Chipantenne recherchieren
 
 def linear_interpolation_x(y,y1,y0,x1,x0):
@@ -81,29 +81,21 @@ def plot_recieved_power(batches, time):
     plt.ylim([-80, 0])
     plt.title("Received signal power over time")
 
-def calculate_impulse_response(batches, delay):
-    corr = []
-    for batch in batches:
-        corr.append(np.correlate(batch, zc_seq, mode = "full")/batchsize)
-    corr = np.array(corr)
-    h_mean = []
-    sincM = sinc_interp(np.shape(corr)[1], 10)
-    for c in corr:
-        c_corrected = cfo_correction(c, sincM)
-        c_max = np.max(abs(c))
-        xpeaks = find_peaks(abs(c), 0.9 * c_max, distance = 200)[0]
-        h=[]
-        for peak in xpeaks:
-            h_ = c[peak-10:peak+118]
-            h.append(h_)
-        h = np.array(h)
-        try:
-            h_mean.append( np.mean(h, axis =0))
-        except:
-            for i in h:
-                plt.plot(abs(i))
-            plt.show()
-    return np.array(h_mean)
+def calculate_impulse_response(batches):
+    corr = batches
+    for idx,c in enumerate(corr.copy()):
+        c = np.correlate(c, zc_seq, mode = "same")/batchsize
+        c = cfo_correction(c, 10)
+        corr[idx] = c
+    corr = np.reshape(corr, (number_of_batches, int(round(batchsize/256)), 256))
+    corr = corr[:,1:-1,:]
+    for idx_c, c in enumerate(corr.copy()):
+        for idx_h, h in enumerate(c.copy()):
+            h_max = np.argmax(abs(h))
+            h = np.roll(h,10-h_max)
+            corr[idx_c,idx_h] = h
+    corr = corr[:,:,:128]
+    return np.mean(corr, axis = 1)
 
 def plot_impulse_response(h, time, delay):
     tau,t = np.meshgrid(delay, time)
@@ -153,39 +145,48 @@ def calculate_B_coh(T, threshold, stepsize = 10):
     B_coh = np.array(B_coh)
     return moving_average(B_coh, batches_per_value, stepsize)
 
-def sinc_interp(x_len, upsample_factor):
-    '''
-    Modified sinc interpolation from this source: https://gist.github.com/endolith/1297227#file-sinc_interp-py
-    '''
-    s = np.arange(0, x_len* upsample_factor, upsample_factor)
-    u = np.arange(x_len* upsample_factor, 2 * x_len* upsample_factor)
-    sinc_idx = np.tile(u, (x_len, 1)) - np.tile(s[:,np.newaxis], (1, len(u)))
-    u_sinc = np.arange(-x_len, x_len, 1/(upsample_factor))
-    sinc = np.sinc(u_sinc)
-    return sinc[sinc_idx]
+# def sinc_interp(x_len, upsample_factor):
+#     '''
+#     Modified sinc interpolation from this source: https://gist.github.com/endolith/1297227#file-sinc_interp-py
+#     '''
+#     s = np.arange(0, x_len* upsample_factor, upsample_factor)
+#     u = np.arange(x_len* upsample_factor, 2 * x_len* upsample_factor)
+#     sinc_idx = np.tile(u, (x_len, 1)) - np.tile(s[:,np.newaxis], (1, len(u)))
+#     u_sinc = np.arange(-x_len, x_len, 1/(upsample_factor))
+#     sinc = np.sinc(u_sinc)
+#     sincM = sinc[sinc_idx]
+#     print(np.shape(sincM))
+#     plt.figure()
+#     plt.plot(sinc)
+#     plt.figure()
+#     plt.plot(10*np.log10(abs(sinc)))
+#     plt.show()
+#     return sincM
 
-def cfo_correction(x, sincM):
-    upsampled_function = np.dot(x,sincM)
+def cfo_correction(x, upsample_factor):
+    # upsample_factor = np.shape(sincM)[1] / np.shape(sincM)[0]
+    # upsampled_function = np.dot(x,sincM)
+    upsampled_function = resample(x, len(x) * upsample_factor)
     f_max = np.max(abs(upsampled_function))
-    xpeaks = find_peaks(abs(upsampled_function), 0.9 * f_max, distance = 200)[0]
-    corrected_diff = np.mean(np.diff(xpeaks)) / 256
-    resampled_axis = np.rint(np.arange(0, len(upsampled_function), corrected_diff)).astype(int)
+    x_max = np.max(abs(x))
+    x1peaks = find_peaks(abs(upsampled_function), 0.9 * f_max, distance = 200 * upsample_factor)[0]
+    x2peaks = find_peaks(abs(x), 0.9 * x_max, distance = 200)[0]
+
+    corrected_diff = np.mean(np.diff(x1peaks)) / 256
+    offset =  round(np.mean(x1peaks % corrected_diff)) % upsample_factor
+    resampled_axis = np.rint(np.arange(offset, len(upsampled_function)-1, corrected_diff)).astype(int)
+    #print(np.shape(resampled_axis))
     new_h = upsampled_function[resampled_axis]
-    if not corrected_diff == 10.0:
-        print(resampled_axis)
-    # max1 = np.argmax(abs(function))
-    # max2 = np.argmax(abs(upsampled_function))
-    # offset =  max2 - max1 * upsample_factor
-    # while offset < 0:
-    #     offset = offset + upsample_factor
-    # while offset > upsample_factor:
-    #     offset = offset - upsample_factor
-    #plt.figure()
-    #plt.plot(abs(upsampled_function))
-    #plt.figure()
-    #plt.plot(abs(new_h))
-    #plt.plot(abs(x))
-    #plt.show()
+    if len(new_h) >len(x):
+        new_h = new_h[:len(x)]
+    if len(new_h) < len(x):
+        new_h = np.pad(new_h, (0,len(x) - len(new_h)), 'constant')
+    # plt.figure()
+    # plt.plot(abs(upsampled_function))
+    # plt.figure()
+    # plt.plot(abs(new_h))
+    # plt.plot(abs(x))
+    # plt.show()
     # if np.shape(new_h)[0] != 128:
     #      print(f'len(new_h) = {np.shape(new_h)[0]}')
     #      print(f'len(upsampled_function) = {np.shape(upsampled_function)[0]}')
@@ -219,7 +220,8 @@ def plot_B_coh(b_50, b_90, time):
     plt.xlabel("Time [s]")
     plt.ylabel("B_coh [Hz]")
     plt.title("Coherence bandwidths over time with moving average filter applied")
-    plt.ylim([0, 1.02*fs])
+    plt.ylim([0
+    , 1.02*fs])
     plt.legend(loc="best")
 
 def calculate_T_coh(T_, threshold):
@@ -269,7 +271,7 @@ if __name__ == "__main__":
     plot_recieved_power(batches, time)
 
     delay = np.linspace(0, 128 / fs, 128)
-    h = calculate_impulse_response(batches, delay)
+    h = calculate_impulse_response(batches)
 
     plot_impulse_response(h, time, delay)
 
