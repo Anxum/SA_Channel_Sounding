@@ -1,7 +1,7 @@
 import numpy as np
 import matplotlib.pyplot as plt
 import pandas as pd
-from file_management import register_measurements, choose_measurement, read_meta_data
+from file_management import register_measurements, choose_measurement, read_meta_data, save_impulse_response
 from graphing import plot_recieved_power, plot_impulse_response, plot_timevariant_transferfunction, plot_B_coh, plot_T_coh
 from scipy.signal import find_peaks, resample
 from scipy.stats import norm
@@ -54,23 +54,20 @@ def devide_in_batches(data, batchsize):
     return np.array(batches)
 
 
-def calculate_impulse_response(batches):
+def correlate_batches(batches):
     corr = batches
     for idx,c in enumerate(corr.copy()):
         c = np.correlate(c, zc_seq, mode = "same")/batchsize
-        c = cfo_correction(c, 10)
         if len(c) == 0:
             return []
         corr[idx] = c
     corr = np.reshape(corr, (number_of_batches, int(round(batchsize/256)), 256))
-    corr = corr[:,1:-1,:]
     for idx_c, c in enumerate(corr.copy()):
         for idx_h, h in enumerate(c.copy()):
             h_max = np.argmax(abs(h))
             h = np.roll(h,10-h_max)
             corr[idx_c,idx_h] = h
-    corr = corr[:,:,:128]
-    return np.mean(corr, axis = 1)
+    return corr
 
 
 def calculate_timevariant_transferfunction(h, usable_bandwidth = 20e6):
@@ -84,6 +81,37 @@ def calculate_timevariant_transferfunction(h, usable_bandwidth = 20e6):
         T = T[:, unusable_bins:-unusable_bins]
     return T
 
+def cfo_correction(corr, upsample_factor):
+    batchsize = int(np.shape(corr)[1] * np.shape(corr)[2])
+    corr_ = np.reshape(corr, (np.shape(corr)[0], batchsize))
+    corrected_corr = np.zeros(np.shape(corr_), dtype =np.complex64)
+    for idx, x in enumerate(corr_.copy()):
+
+        upsampled_function = resample(x, len(x) * upsample_factor)
+        f_max = np.max(abs(upsampled_function))
+        x_max = np.max(abs(x))
+        x1peaks = find_peaks(abs(upsampled_function), 0.9 * f_max, distance = 200 * upsample_factor)[0]
+        x2peaks = find_peaks(abs(x), 0.9 * x_max, distance = 200)[0]
+
+        if len(x1peaks) < batchsize / (2 * 256) or len(x1peaks) > 2*batchsize / 256:
+            print("Bad signal! Could not perform cfo correction!")
+            print("")
+            return corr
+
+        corrected_diff = np.mean(np.diff(x1peaks)) / 256
+        offset =  round(np.mean(x1peaks % corrected_diff)) % upsample_factor
+        resampled_axis = np.rint(np.arange(offset, len(upsampled_function)-1, corrected_diff)).astype(int)
+        new_h = upsampled_function[resampled_axis]
+        if len(new_h) >len(x):
+            new_h = new_h[:len(x)]
+        if len(new_h) < len(x):
+            new_h = np.pad(new_h, (0,len(x) - len(new_h)), 'constant')
+        corrected_corr[idx] = new_h
+    return np.reshape(corrected_corr, np.shape(corr))
+
+def calculate_impulse_response(corr):
+    corr = corr[:,1:-1,:128]
+    return np.mean(corr, axis = 1)
 
 def calculate_B_coh(T, threshold, stepsize = 10):
     if not 0<=threshold<=1:
@@ -95,39 +123,12 @@ def calculate_B_coh(T, threshold, stepsize = 10):
 
         x = ( np.argmax( abs(freq_corr_function) < threshold * freq_corr_max ))
         if np.min(abs(freq_corr_function) > threshold * freq_corr_max ):
-            B_coh.append(fs)
+            B_coh.append(np.min([fs, 20e6]))
         else:
-            B_coh.append(x * 2*(fs)/len(freq_corr_function))
+            B_coh.append(x * 2*(np.min([fs, 20e6]))/len(freq_corr_function))
 
     B_coh = np.array(B_coh)
     return moving_average(B_coh, batches_per_value, stepsize)
-
-
-def cfo_correction(x, upsample_factor):
-    batchsize = len(x)
-    upsampled_function = resample(x, len(x) * upsample_factor)
-    f_max = np.max(abs(upsampled_function))
-    x_max = np.max(abs(x))
-    x1peaks = find_peaks(abs(upsampled_function), 0.9 * f_max, distance = 200 * upsample_factor)[0]
-    x2peaks = find_peaks(abs(x), 0.9 * x_max, distance = 200)[0]
-
-
-
-    if len(x1peaks) < batchsize / (2 * 256) or len(x1peaks) > 2*batchsize / 256:
-        print("Bad signal! Cannot evaluate channel parameters properly. Please repeat the measurement.")
-        print("")
-        plt.show()
-        return []
-
-    corrected_diff = np.mean(np.diff(x1peaks)) / 256
-    offset =  round(np.mean(x1peaks % corrected_diff)) % upsample_factor
-    resampled_axis = np.rint(np.arange(offset, len(upsampled_function)-1, corrected_diff)).astype(int)
-    new_h = upsampled_function[resampled_axis]
-    if len(new_h) >len(x):
-        new_h = new_h[:len(x)]
-    if len(new_h) < len(x):
-        new_h = np.pad(new_h, (0,len(x) - len(new_h)), 'constant')
-    return new_h
 
 
 def calculate_T_coh(T_, threshold):
@@ -153,40 +154,47 @@ def calculate_T_coh(T_, threshold):
 
 if __name__ == "__main__":
 
-    # TODO: Szenarien mit 30, validieren mit synthetischen Daten(bekannte Kohärenz BB, Kohärenzzseit Siehe Matlab)
+    # TODO: validieren mit synthetischen Daten(bekannte Kohärenz BB, Kohärenzzseit Siehe Matlab)
 
     register_measurements()
     while True:
-        folder, file = choose_measurement()
+        folder, file, name_of_measurement = choose_measurement()
         print("===========================================================================")
-        if folder == "" and file == "":
+        if folder == "" and file == "" and name_of_measurement == "":
             break
-        fc, fs, batchsize, capture_interval, date, time = read_meta_data(file)
+        fc, fs, batchsize, capture_interval, date_of_measurement, time_of_measurement = read_meta_data(file)
         print("")
-        print(f'Date of measurement = {date}')
-        print(f'Time of measurement = {time}')
-        print(f'fc = {fc * 10**-6} MHz, fs = {fs * 10**-6} MHz, batchsize = {batchsize} S, capture interval = {capture_interval * 10**3} ms')
+        print(f'Calculating measurement with the name: {name_of_measurement}')
+        print(f'Date of measurement = {date_of_measurement}')
+        print(f'Time of measurement = {time_of_measurement}')
+        print(f'fc = {fc * 1e-6} MHz, fs = {fs * 1e-6} MHz, batchsize = {batchsize} S, capture interval = {capture_interval * 1e3} ms')
         print("")
-        batches_per_value = round(windowsize_in_sec/capture_interval)
-        data = np.fromfile(open(f"{folder}/{file}"), dtype=np.complex64)
-        zc_seq = np.load('zc_sequence.npy')
+        h = 0
+        if ".dat"in file:
+            batches_per_value = round(windowsize_in_sec/capture_interval)
+            data = np.fromfile(open(f"{folder}/{file}"), dtype=np.complex64)
+            zc_seq = np.load('zc_sequence.npy')
 
-        batches = devide_in_batches(data, batchsize)
-        number_of_batches = np.shape(batches)[0]
-        time = np.arange(0,capture_interval*len(batches), capture_interval)
+            batches = devide_in_batches(data, batchsize)
+            number_of_batches = np.shape(batches)[0]
+            time = np.arange(0,capture_interval*len(batches), capture_interval)
 
-        recieved_power = np.sum(abs(batches**2), axis = 1) / batchsize
-        recieved_power_dbfs = 10 * np.log10(recieved_power)
-        if np.max(recieved_power_dbfs) > -10:
-            print("Warning: The recieved signal power exceeds -10 dBFS. Clipping may occour!")
-            print("")
-        plot_recieved_power(recieved_power_dbfs, time)
+            recieved_power = np.sum(abs(batches**2), axis = 1) / batchsize
+            recieved_power_dbfs = 10 * np.log10(recieved_power)
+            if np.max(recieved_power_dbfs) > -10:
+                print("Warning: The recieved signal power exceeds -10 dBFS. Clipping may occour!")
+                print("")
+            plot_recieved_power(recieved_power_dbfs, time)
 
+
+            corr = correlate_batches(batches)
+            corr_cfo_corrected = cfo_correction(corr, 10)
+            h = calculate_impulse_response(corr_cfo_corrected)
+            save_impulse_response(h, date_of_measurement, time_of_measurement, fc, fs, batchsize, capture_interval, name_of_measurement, f'{folder}/{file}')
+        if ".npy" in file:
+            h = np.load(f'{folder}/{file}')
+        time = np.arange(0,capture_interval*batchsize, capture_interval)
         delay = np.linspace(0, 128 / fs, 128)
-        h = calculate_impulse_response(batches)
-        if len(h) == 0:
-            continue
-
         plot_impulse_response(h, time, delay)
 
         T = calculate_timevariant_transferfunction(h)
@@ -201,7 +209,7 @@ if __name__ == "__main__":
         time_of_movavg_filter = batches_per_value * capture_interval
         time = np.linspace(time_of_movavg_filter/2, signal_time-time_of_movavg_filter/2, len(B_coh_50))
 
-        plot_B_coh(B_coh_50, B_coh_90, time, fs)
+        plot_B_coh(B_coh_50, B_coh_90, time, np.min([fs,20e6]))
 
         B_coh_50_mean, B_coh_50_conf_interval_999 = confidence_interval(B_coh_50, 0.999)
         B_coh_90_mean, B_coh_90_conf_interval_999 = confidence_interval(B_coh_90, 0.999)

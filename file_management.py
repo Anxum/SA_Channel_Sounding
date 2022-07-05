@@ -6,11 +6,13 @@ def read_meta_data(filename):
     str = filename.split('_')
     date_ = str[1]
     time_ = str[2]
-    fc_ = int( str[3][0:str[3].find('MHz')] ) * 10**6
-    fs_ = int( str[4][0:str[4].find('MSps')] ) * 10**6
+    fc_ = int( str[3][0:str[3].find('MHz')] ) * 1e6
+    fs_ = int( str[4][0:str[4].find('MSps')] ) * 1e6
     batchsize_ = int( str[5][0:str[5].find('S')] )
-    capture_interval_ = int( str[6][0:str[6].find('ms')] ) * 10**-3
+    capture_interval_ = int( str[6][0:str[6].find('ms')] ) * 1e-3
     return fc_, fs_, batchsize_, capture_interval_, date_, time_
+
+
 
 def choose_measurement():
     pd.set_option('display.max_colwidth', None)
@@ -23,7 +25,7 @@ def choose_measurement():
         print("1 ---- Show all names of the measurements with the corresponding descriptions")
         print("2 ---- Remove a measurement from the registration")
         print("3 ---- End the program")
-        option = input("Or enter the name of the file you want to evaluate:  ")
+        option = input("Or enter the name of the file you want to evaluate (Press Enter to evaluate the last measurement):  ")
         print("")
         if option == "1": # Show all measurements
             print("")
@@ -51,15 +53,25 @@ def choose_measurement():
                 file = rem_path[split_idx+1:]
                 os.remove(rem_path)
                 df.drop([rem_idx[0]], inplace = True)
+                df.reset_index()
                 df.to_csv("../list_of_measurements.csv")
                 print("")
                 print(f"Measurement {remove} has been removed from registration")
             continue
 
         if option == "3": # Exit Program
-            return "",""
+            return "","",""
 
-        path = np.array(df[df["Name"] == option]["Path to file"]) #A Name has been entered
+        name = option                   #A Name has been entered
+        path = np.array(df[df["Name"] == name]["Path to impulse response"])
+
+        if name == "":
+            path = np.array([df["Path to impulse response"].iloc[-1]]) # Choose the latest measurement
+            name = df["Name"].iloc[-1]
+
+        if path[0] == "-":
+            path = np.array(df[df["Name"] == name]["Path to file"])
+
         if path.size == 0:
             print("The name you entered does not exist!")
             print("Possible names are:")
@@ -68,9 +80,19 @@ def choose_measurement():
         else:
             break
     split_idx = path[0].rfind('/')
-    folder = path[0][:split_idx+1]
+    folder = path[0][:split_idx]
     file = path[0][split_idx+1:]
-    return folder, file
+    return folder, file, name
+
+def save_impulse_response(h, date, time, fc, fs, batchsize, capture_interval, name_of_measurement, path_to_raw_measurement):
+    df = pd.read_csv("../list_of_measurements.csv", index_col = 0)
+    measurement_idx = df.index[df["Name"] == name_of_measurement].tolist()[0]
+    if df["Path to impulse response"].iloc[measurement_idx]  == "-":
+        filename = f"{name_of_measurement}_{date}_{time}_{int(fc * 1e-6)}MHz_{int(fs *1e-6)}MSps_{batchsize}S_{int(capture_interval * 1e3)}ms"
+        folder = "../impulse_responses"
+        df.loc[measurement_idx, "Path to impulse response"] = f"{folder}/{filename}.npy"
+        np.save(f"{folder}/{filename}", h)
+        df.to_csv("../list_of_measurements.csv")
 
 
 def register_measurements():
@@ -137,12 +159,13 @@ def register_measurements():
             "fs": fs,
             "Batchsize": batchsize,
             "Capture interval": capture_interval,
-            "Path to file": f"../Messungen/{file}",
+            "Path to file": f"../raw_data/{file}",
+            "Path to impulse response": "-",
             "Description": description}
 
-            os.rename(f"{home}/{file}", f"../Messungen/{file}")
+            os.rename(f"{home}/{file}", f"../raw_data/{file}")
             df.to_csv("../list_of_measurements.csv")
-            print(f"Measurement was saved to /Messungen/{file} with the name: {name}")
+            print(f"Measurement was saved to /raw_data/{file} with the name: {name}")
 
         if option == "2": # Delete a file
 
