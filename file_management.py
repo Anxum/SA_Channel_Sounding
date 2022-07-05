@@ -13,11 +13,53 @@ def read_meta_data(filename):
     return fc_, fs_, batchsize_, capture_interval_, date_, time_
 
 def choose_measurement():
-    df = pd.read_csv("../list_of_measurements.csv")
+    pd.set_option('display.max_colwidth', None)
+    df = pd.read_csv("../list_of_measurements.csv", index_col = 0)
     path = []
     while True:
-        name = input("Please enter the name of the file you want to evaluate: ")
-        path = np.array(df[df["Name"] == name]["Path to file"])
+        print("===========================================================================")
+        print("")
+        print("Options:")
+        print("1 ---- Show all names of the measurements with the corresponding descriptions")
+        print("2 ---- Remove a measurement from the registration")
+        print("3 ---- End the program")
+        option = input("Or enter the name of the file you want to evaluate:  ")
+        print("")
+        if option == "1": # Show all measurements
+            print("")
+            print(df[["Name", "Description"]])
+            continue
+
+        if option == "2": # Remove measurement from registration
+            remove = input("Please enter the name of the measurement you want to remove: ")
+            print("")
+            rem_idx = df.index[df["Name"] == remove].tolist()
+            if len(rem_idx) == 0:
+                print("The name you entered does not exist!")
+                print("Possible names are:")
+                print(df["Name"])
+                continue
+            print("_____________________________________________________________")
+            print(df.iloc[rem_idx[0]])
+            print("_____________________________________________________________")
+            print("")
+            print("Are you sure you want to remove this measurement:")
+            confirmation = input( "y/n - : ")
+            if confirmation in ["y", "yes", "Y", "YES"]:
+                rem_path = df.iloc[rem_idx[0]]["Path to file"]
+                split_idx = rem_path.rfind('/')
+                file = rem_path[split_idx+1:]
+                os.remove(rem_path)
+                df.drop([rem_idx[0]], inplace = True)
+                df.to_csv("../list_of_measurements.csv")
+                print("")
+                print(f"Measurement {remove} has been removed from registration")
+            continue
+
+        if option == "3": # Exit Program
+            return "",""
+
+        path = np.array(df[df["Name"] == option]["Path to file"]) #A Name has been entered
         if path.size == 0:
             print("The name you entered does not exist!")
             print("Possible names are:")
@@ -50,10 +92,11 @@ def register_measurements():
         "1":"Register and save the measurement",
         "2":"Discard the measurement",
         "3":"Ignore this measurement once",
-        "4":"Always ignore this measurement"
+        "4":"Always ignore this measurement",
+        "5":"Skip this step"
         }
 
-        print(f"=====Unregistered measurement found:=====")
+        print(f"======================Unregistered measurement found:======================")
         print("")
         print(file)
         print("")
@@ -78,10 +121,13 @@ def register_measurements():
             name = ""
             while True:
                 name = input("Please enter a name for the measurement: ")
-                if not name in df["Name"].values:
+                if name in ["1", "2", "3", "4", "5", "6", "7" ,"8", "9", "0"]:
+                    print("Please do not choose a single number as a name for the measurement!")
+                elif not name in df["Name"].values:
                     break
                 else:
                     print("Name does already exist! Please choose another one.")
+
 
             df.loc[len(df.index)] = {
             "Name": name,
@@ -92,7 +138,7 @@ def register_measurements():
             "Batchsize": batchsize,
             "Capture interval": capture_interval,
             "Path to file": f"../Messungen/{file}",
-            "Comment": description}
+            "Description": description}
 
             os.rename(f"{home}/{file}", f"../Messungen/{file}")
             df.to_csv("../list_of_measurements.csv")
@@ -118,3 +164,5 @@ def register_measurements():
             f = open("../measurement_registration_ignore.txt", "a")
             f.write(f"{file}\n")
             f.close()
+        if option == "5": # End the program
+            break

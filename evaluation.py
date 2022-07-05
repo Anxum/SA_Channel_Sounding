@@ -59,6 +59,8 @@ def calculate_impulse_response(batches):
     for idx,c in enumerate(corr.copy()):
         c = np.correlate(c, zc_seq, mode = "same")/batchsize
         c = cfo_correction(c, 10)
+        if len(c) == 0:
+            return []
         corr[idx] = c
     corr = np.reshape(corr, (number_of_batches, int(round(batchsize/256)), 256))
     corr = corr[:,1:-1,:]
@@ -102,11 +104,20 @@ def calculate_B_coh(T, threshold, stepsize = 10):
 
 
 def cfo_correction(x, upsample_factor):
+    batchsize = len(x)
     upsampled_function = resample(x, len(x) * upsample_factor)
     f_max = np.max(abs(upsampled_function))
     x_max = np.max(abs(x))
     x1peaks = find_peaks(abs(upsampled_function), 0.9 * f_max, distance = 200 * upsample_factor)[0]
     x2peaks = find_peaks(abs(x), 0.9 * x_max, distance = 200)[0]
+
+
+
+    if len(x1peaks) < batchsize / (2 * 256) or len(x1peaks) > 2*batchsize / 256:
+        print("Bad signal! Cannot evaluate channel parameters properly. Please repeat the measurement.")
+        print("")
+        plt.show()
+        return []
 
     corrected_diff = np.mean(np.diff(x1peaks)) / 256
     offset =  round(np.mean(x1peaks % corrected_diff)) % upsample_factor
@@ -142,62 +153,74 @@ def calculate_T_coh(T_, threshold):
 
 if __name__ == "__main__":
 
-        # TODO: Szenarien mit 30, validieren mit synthetischen Daten(bekannte Kohärenz BB, Kohärenzzseit Siehe Matlab)
+    # TODO: Szenarien mit 30, validieren mit synthetischen Daten(bekannte Kohärenz BB, Kohärenzzseit Siehe Matlab)
+
     register_measurements()
-    folder, file = choose_measurement()
-    fc, fs, batchsize, capture_interval, date, time = read_meta_data(file)
-    print(f'Date of measurement = {date}')
-    print(f'Time of measurement = {time}')
-    print(f'fc = {fc * 10**-6} MHz, fs = {fs * 10**-6} MHz, batchsize = {batchsize} S, capture interval = {capture_interval * 10**3} ms')
-    batches_per_value = round(windowsize_in_sec/capture_interval)
-    data = np.fromfile(open(f"{folder}/{file}"), dtype=np.complex64)
-    zc_seq = np.load('zc_sequence.npy')
+    while True:
+        folder, file = choose_measurement()
+        print("===========================================================================")
+        if folder == "" and file == "":
+            break
+        fc, fs, batchsize, capture_interval, date, time = read_meta_data(file)
+        print("")
+        print(f'Date of measurement = {date}')
+        print(f'Time of measurement = {time}')
+        print(f'fc = {fc * 10**-6} MHz, fs = {fs * 10**-6} MHz, batchsize = {batchsize} S, capture interval = {capture_interval * 10**3} ms')
+        print("")
+        batches_per_value = round(windowsize_in_sec/capture_interval)
+        data = np.fromfile(open(f"{folder}/{file}"), dtype=np.complex64)
+        zc_seq = np.load('zc_sequence.npy')
 
-    batches = devide_in_batches(data, batchsize)
-    number_of_batches = len(batches)
-    time = np.arange(0,capture_interval*len(batches), capture_interval)
+        batches = devide_in_batches(data, batchsize)
+        number_of_batches = np.shape(batches)[0]
+        time = np.arange(0,capture_interval*len(batches), capture_interval)
 
-    recieved_power = np.sum(abs(batches**2), axis = 1) / batchsize
-    recieved_power_dbfs = 10 * np.log10(recieved_power)
-    plot_recieved_power(recieved_power_dbfs, time)
+        recieved_power = np.sum(abs(batches**2), axis = 1) / batchsize
+        recieved_power_dbfs = 10 * np.log10(recieved_power)
+        if np.max(recieved_power_dbfs) > -10:
+            print("Warning: The recieved signal power exceeds -10 dBFS. Clipping may occour!")
+            print("")
+        plot_recieved_power(recieved_power_dbfs, time)
 
-    delay = np.linspace(0, 128 / fs, 128)
-    h = calculate_impulse_response(batches)
+        delay = np.linspace(0, 128 / fs, 128)
+        h = calculate_impulse_response(batches)
+        if len(h) == 0:
+            continue
 
-    plot_impulse_response(h, time, delay)
+        plot_impulse_response(h, time, delay)
 
-    T = calculate_timevariant_transferfunction(h)
-    cutoff_frequency = (1 - ( (1-np.shape(T)[1]) / 128 ) *fs)/2
-    frequency = np.linspace( -cutoff_frequency, cutoff_frequency, np.shape(T)[1])
-    plot_timevariant_transferfunction(T, time, frequency)
+        T = calculate_timevariant_transferfunction(h)
+        cutoff_frequency = (1 - ( (1-np.shape(T)[1]) / 128 ) *fs)/2
+        frequency = np.linspace( -cutoff_frequency, cutoff_frequency, np.shape(T)[1])
+        plot_timevariant_transferfunction(T, time, frequency)
 
-    B_coh_50 = calculate_B_coh(T, 0.5)
-    B_coh_90 = calculate_B_coh(T, 0.9)
+        B_coh_50 = calculate_B_coh(T, 0.5)
+        B_coh_90 = calculate_B_coh(T, 0.9)
 
-    signal_time = capture_interval * len(batches)
-    time_of_movavg_filter = batches_per_value * capture_interval
-    time = np.linspace(time_of_movavg_filter/2, signal_time-time_of_movavg_filter/2, len(B_coh_50))
+        signal_time = capture_interval * len(batches)
+        time_of_movavg_filter = batches_per_value * capture_interval
+        time = np.linspace(time_of_movavg_filter/2, signal_time-time_of_movavg_filter/2, len(B_coh_50))
 
-    plot_B_coh(B_coh_50, B_coh_90, time, fs)
+        plot_B_coh(B_coh_50, B_coh_90, time, fs)
 
-    B_coh_50_mean, B_coh_50_conf_interval_999 = confidence_interval(B_coh_50, 0.999)
-    B_coh_90_mean, B_coh_90_conf_interval_999 = confidence_interval(B_coh_90, 0.999)
-    print(f'99.9% of values of B_coh_50 lie in between {B_coh_50_conf_interval_999}[Hz]')
-    print(f'99.9% of values of B_coh_90 lie in between {B_coh_90_conf_interval_999}[Hz]')
+        B_coh_50_mean, B_coh_50_conf_interval_999 = confidence_interval(B_coh_50, 0.999)
+        B_coh_90_mean, B_coh_90_conf_interval_999 = confidence_interval(B_coh_90, 0.999)
+        print(f'99.9% of values of B_coh_50 lie in between {B_coh_50_conf_interval_999}[Hz]')
+        print(f'99.9% of values of B_coh_90 lie in between {B_coh_90_conf_interval_999}[Hz]')
 
-    #T_coh
-    windowsize_in_sec = 1
-    batches_per_value = round(windowsize_in_sec/capture_interval)
-    T_coh_50 = calculate_T_coh(T, 0.5)
-    T_coh_90 = calculate_T_coh(T, 0.9)
+        #T_coh
+        windowsize_in_sec = 1
+        batches_per_value = round(windowsize_in_sec/capture_interval)
+        T_coh_50 = calculate_T_coh(T, 0.5)
+        T_coh_90 = calculate_T_coh(T, 0.9)
 
-    time = np.linspace(windowsize_in_sec/2, signal_time - windowsize_in_sec/2, len(T_coh_50))
+        time = np.linspace(windowsize_in_sec/2, signal_time - windowsize_in_sec/2, len(T_coh_50))
 
-    plot_T_coh(T_coh_50, T_coh_90, time, windowsize_in_sec)
+        plot_T_coh(T_coh_50, T_coh_90, time, windowsize_in_sec)
 
-    T_coh_50_mean, T_coh_50_conf_interval_999 = confidence_interval(T_coh_50, 0.999)
-    T_coh_90_mean, T_coh_90_conf_interval_999 = confidence_interval(T_coh_90, 0.999)
-    print(f'99.9% of values of T_coh_50 lie in between {T_coh_50_conf_interval_999}[s]')
-    print(f'99.9% of values of T_coh_90 lie in between {T_coh_90_conf_interval_999}[s]')
-
-    plt.show()
+        T_coh_50_mean, T_coh_50_conf_interval_999 = confidence_interval(T_coh_50, 0.999)
+        T_coh_90_mean, T_coh_90_conf_interval_999 = confidence_interval(T_coh_90, 0.999)
+        print(f'99.9% of values of T_coh_50 lie in between {T_coh_50_conf_interval_999}[s]')
+        print(f'99.9% of values of T_coh_90 lie in between {T_coh_90_conf_interval_999}[s]')
+        print("")
+        plt.show()
