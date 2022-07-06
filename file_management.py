@@ -25,7 +25,7 @@ def choose_measurement():
         print("1 ---- Show all names of the measurements with the corresponding descriptions")
         print("2 ---- Remove a measurement from the registration")
         print("3 ---- End the program")
-        option = input("Or enter the name of the file you want to evaluate (Press Enter to evaluate the last measurement):  ")
+        option = input("Or enter the name of the file you want to evaluate (Press Enter to evaluate the last measurement)(Add a '?' to the end of the name to calculate from scratch):  ")
         print("")
         if option == "1": # Show all measurements
             print("")
@@ -62,14 +62,14 @@ def choose_measurement():
         if option == "3": # Exit Program
             return "","",""
 
-        name = option                   #A Name has been entered
-        path = np.array(df[df["Name"] == name]["Path to impulse response"])
+        name = option.split("?")[0]                   #A Name has been entered
+        path = np.array(df[df["Name"] == name]["Path to condensed measurement"])
 
         if name == "":
-            path = np.array([df["Path to impulse response"].iloc[-1]]) # Choose the latest measurement
+            path = np.array([df["Path to condensed measurement"].iloc[-1]]) # Choose the latest measurement
             name = df["Name"].iloc[-1]
 
-        if path[0] == "-":
+        if path[0] == "-" or "?" in name:
             path = np.array(df[df["Name"] == name]["Path to file"])
 
         if path.size == 0:
@@ -84,14 +84,14 @@ def choose_measurement():
     file = path[0][split_idx+1:]
     return folder, file, name
 
-def save_impulse_response(h, date, time, fc, fs, batchsize, capture_interval, name_of_measurement, path_to_raw_measurement):
+def save_impulse_response(h,recieved_power_dbfs, date, time, fc, fs, batchsize, capture_interval, name_of_measurement, path_to_raw_measurement):
     df = pd.read_csv("../list_of_measurements.csv", index_col = 0)
     measurement_idx = df.index[df["Name"] == name_of_measurement].tolist()[0]
-    if df["Path to impulse response"].iloc[measurement_idx]  == "-":
+    if df["Path to condensed measurement"].iloc[measurement_idx]  == "-":
         filename = f"{name_of_measurement}_{date}_{time}_{int(fc * 1e-6)}MHz_{int(fs *1e-6)}MSps_{batchsize}S_{int(capture_interval * 1e3)}ms"
-        folder = "../impulse_responses"
-        df.loc[measurement_idx, "Path to impulse response"] = f"{folder}/{filename}.npy"
-        np.save(f"{folder}/{filename}", h)
+        folder = "../condensed_measurements"
+        df.loc[measurement_idx, "Path to condensed measurement"] = f"{folder}/{filename}.npz"
+        np.savez(f"{folder}/{filename}", name1 = h, name2 = recieved_power_dbfs)
         df.to_csv("../list_of_measurements.csv")
 
 
@@ -139,18 +139,23 @@ def register_measurements():
         if option == "1": # Register a file
             df = pd.read_csv("../list_of_measurements.csv", index_col = 0)
             fc, fs, batchsize, capture_interval, date, time = read_meta_data(file)
-            description = input("Please enter a brief description of the measurement: ")
             name = ""
             while True:
                 name = input("Please enter a name for the measurement: ")
                 if name in ["1", "2", "3", "4", "5", "6", "7" ,"8", "9", "0"]:
                     print("Please do not choose a single number as a name for the measurement!")
+                elif "?" in name:
+                    print("Please don't use the '?' charakter in the name!")
                 elif not name in df["Name"].values:
                     break
                 else:
                     print("Name does already exist! Please choose another one.")
+                    print("Already existing names are:")
+                    print("")
+                    print(df["Name"])
+                    print("")
 
-
+            description = input("Please enter a brief description of the measurement: ")
             df.loc[len(df.index)] = {
             "Name": name,
             "Date": date,
@@ -160,7 +165,7 @@ def register_measurements():
             "Batchsize": batchsize,
             "Capture interval": capture_interval,
             "Path to file": f"../raw_data/{file}",
-            "Path to impulse response": "-",
+            "Path to condensed measurement": "-",
             "Description": description}
 
             os.rename(f"{home}/{file}", f"../raw_data/{file}")

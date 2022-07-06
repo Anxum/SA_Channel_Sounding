@@ -27,14 +27,14 @@ def confidence_interval(data, percentage):
     HIW = sigma * np.sqrt(var/n)
     return mean, np.array([mean - HIW, mean + HIW])
 
-def cyclic_correlate(a, v):
+def cyclic_auto_correlate(a):
     arr = np.tile(np.fft.fftshift(a), 2)
-    return np.correlate(arr, v, mode = "valid")
+    return np.correlate(arr, a, mode = "valid")
 
 
 def moving_average(data, windowsize, stepsize = 1):
     if stepsize < 1 or stepsize > windowsize:
-        print("The stepsize should be between 1 and the windowsize")
+        print("When calculating a moving average: The stepsize should be between 1 and the windowsize")
     else:
         avg_data = []
         for n in range(0, len(data)-windowsize, stepsize):
@@ -45,13 +45,7 @@ def devide_in_batches(data, batchsize):
     if len(data) % batchsize:
         print("There has been an over or underflow. Please repeat the measurement!") # maybe raise an exception
     number_of_batches = int( (len(data)) / batchsize )
-    batches = []
-    for b in range(number_of_batches):
-        lower = batchsize * b
-        upper = batchsize * (b+1)
-        #seperate the batches
-        batches.append(data[lower:upper])
-    return np.array(batches)
+    return np.reshape(data, (number_of_batches, batchsize))
 
 
 def correlate_batches(batches):
@@ -90,16 +84,15 @@ def cfo_correction(corr, upsample_factor):
         upsampled_function = resample(x, len(x) * upsample_factor)
         f_max = np.max(abs(upsampled_function))
         x_max = np.max(abs(x))
-        x1peaks = find_peaks(abs(upsampled_function), 0.9 * f_max, distance = 200 * upsample_factor)[0]
-        x2peaks = find_peaks(abs(x), 0.9 * x_max, distance = 200)[0]
+        peak_positions = find_peaks(abs(upsampled_function), 0.9 * f_max, distance = 200 * upsample_factor)[0]
 
-        if len(x1peaks) < batchsize / (2 * 256) or len(x1peaks) > 2*batchsize / 256:
+        if len(peak_positions) < batchsize / (2 * 256) or len(peak_positions) > 2*batchsize / 256:
             print("Bad signal! Could not perform cfo correction!")
             print("")
             return corr
 
-        corrected_diff = np.mean(np.diff(x1peaks)) / 256
-        offset =  round(np.mean(x1peaks % corrected_diff)) % upsample_factor
+        corrected_diff = np.mean(np.diff(peak_positions)) / 256
+        offset =  round(np.mean(peak_positions % corrected_diff)) % upsample_factor
         resampled_axis = np.rint(np.arange(offset, len(upsampled_function)-1, corrected_diff)).astype(int)
         new_h = upsampled_function[resampled_axis]
         if len(new_h) >len(x):
@@ -115,14 +108,14 @@ def calculate_impulse_response(corr):
 
 def calculate_B_coh(T, threshold, stepsize = 10):
     if not 0<=threshold<=1:
-        print("threshold value has to be between 0 and 1")
+        print("When calculating B_coh: threshold value has to be between 0 and 1")
     B_coh = []
     for t in T:
-        freq_corr_function = np.fft.fftshift( cyclic_correlate(t,t) )
+        freq_corr_function = np.fft.fftshift( cyclic_auto_correlate(t) )
         freq_corr_max = abs( np.max(freq_corr_function) )
 
         x = ( np.argmax( abs(freq_corr_function) < threshold * freq_corr_max ))
-        if np.min(abs(freq_corr_function) > threshold * freq_corr_max ):
+        if np.min(abs(freq_corr_function)) > threshold * freq_corr_max :
             B_coh.append(np.min([fs, 20e6]))
         else:
             B_coh.append(x * 2*(np.min([fs, 20e6]))/len(freq_corr_function))
@@ -138,16 +131,17 @@ def calculate_T_coh(T_, threshold):
     for t in range (0, int(number_of_batches-batches_per_value), stepsize):
         T_coh_f = []
         for f in T:
-            time_corr_function = np.fft.fftshift( cyclic_correlate(f[t:t+batches_per_value],f[t:t+batches_per_value]) )
+            time_corr_function = np.fft.fftshift( cyclic_auto_correlate(f[t:t+batches_per_value]) )
+
             time_corr_max = abs( np.max(time_corr_function) )
 
             x = ( np.argmax( abs(time_corr_function) < threshold * time_corr_max ))
-            if np.min(abs(time_corr_function) > threshold * time_corr_max ):
+            if np.min(abs(time_corr_function)) > threshold * time_corr_max :
                 T_coh_f.append(windowsize_in_sec)
             else:
                 T_coh_f.append(x * 2*windowsize_in_sec/len(time_corr_function))
-
         T_coh.append(np.mean(T_coh_f))
+
     return np.array(T_coh)
 
 
@@ -170,32 +164,36 @@ if __name__ == "__main__":
         print(f'fc = {fc * 1e-6} MHz, fs = {fs * 1e-6} MHz, batchsize = {batchsize} S, capture interval = {capture_interval * 1e3} ms')
         print("")
         h = 0
+        recieved_power_dbfs =0
+        batches_per_value = round(windowsize_in_sec/capture_interval)
         if ".dat"in file:
-            batches_per_value = round(windowsize_in_sec/capture_interval)
             data = np.fromfile(open(f"{folder}/{file}"), dtype=np.complex64)
             zc_seq = np.load('zc_sequence.npy')
 
             batches = devide_in_batches(data, batchsize)
             number_of_batches = np.shape(batches)[0]
-            time = np.arange(0,capture_interval*len(batches), capture_interval)
+            time = np.arange(0,capture_interval*batchsize, capture_interval)
 
             recieved_power = np.sum(abs(batches**2), axis = 1) / batchsize
             recieved_power_dbfs = 10 * np.log10(recieved_power)
-            if np.max(recieved_power_dbfs) > -10:
-                print("Warning: The recieved signal power exceeds -10 dBFS. Clipping may occour!")
-                print("")
-            plot_recieved_power(recieved_power_dbfs, time)
-
 
             corr = correlate_batches(batches)
             corr_cfo_corrected = cfo_correction(corr, 10)
             h = calculate_impulse_response(corr_cfo_corrected)
-            save_impulse_response(h, date_of_measurement, time_of_measurement, fc, fs, batchsize, capture_interval, name_of_measurement, f'{folder}/{file}')
-        if ".npy" in file:
-            h = np.load(f'{folder}/{file}')
-        time = np.arange(0,capture_interval*batchsize, capture_interval)
+            save_impulse_response(h,recieved_power_dbfs, date_of_measurement, time_of_measurement, fc, fs, batchsize, capture_interval, name_of_measurement, f'{folder}/{file}')
+        if ".npz" in file:
+            meas = np.load(f'{folder}/{file}',allow_pickle=True)
+            h = meas["name1"]
+            recieved_power_dbfs = meas["name2"]
+            number_of_batches = len(recieved_power_dbfs)
+        time = np.arange(0,capture_interval*len(recieved_power_dbfs), capture_interval)
         delay = np.linspace(0, 128 / fs, 128)
+        if np.max(recieved_power_dbfs) > -10:
+            print("Warning: The recieved signal power exceeds -10 dBFS. Clipping may occour!")
+            print("")
+        plot_recieved_power(recieved_power_dbfs, time)
         plot_impulse_response(h, time, delay)
+
 
         T = calculate_timevariant_transferfunction(h)
         cutoff_frequency = (1 - ( (1-np.shape(T)[1]) / 128 ) *fs)/2
@@ -205,7 +203,7 @@ if __name__ == "__main__":
         B_coh_50 = calculate_B_coh(T, 0.5)
         B_coh_90 = calculate_B_coh(T, 0.9)
 
-        signal_time = capture_interval * len(batches)
+        signal_time = capture_interval * number_of_batches
         time_of_movavg_filter = batches_per_value * capture_interval
         time = np.linspace(time_of_movavg_filter/2, signal_time-time_of_movavg_filter/2, len(B_coh_50))
 
