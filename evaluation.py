@@ -4,7 +4,7 @@ import pandas as pd
 from file_management import register_measurements, choose_measurement, read_meta_data, save_impulse_response
 from graphing import plot_recieved_power, plot_impulse_response, plot_timevariant_transferfunction, plot_B_coh, plot_T_coh
 from scipy.signal import find_peaks, resample
-from scipy.stats import norm
+from scipy.stats import norm, moment
 from mpl_toolkits.mplot3d import Axes3D
 
 
@@ -15,8 +15,8 @@ capture_interval = 0
 windowsize_in_sec = 1
 batches_per_value = 0
 number_of_batches = 0
+zc_len = 0
 
-# TODO UMTS Antenne Patchantenne / Chipantenne recherchieren
 
 def confidence_interval(data, percentage):
     quantile = (percentage + 1)/2
@@ -55,7 +55,7 @@ def correlate_batches(batches):
         if len(c) == 0:
             return []
         corr[idx] = c
-    corr = np.reshape(corr, (number_of_batches, int(round(batchsize/256)), 256))
+    corr = np.reshape(corr, (number_of_batches, int(round(batchsize/zc_len)), zc_len))
     for idx_c, c in enumerate(corr.copy()):
         for idx_h, h in enumerate(c.copy()):
             h_max = np.argmax(abs(h))
@@ -71,7 +71,7 @@ def calculate_timevariant_transferfunction(h, usable_bandwidth = 20e6):
     T = np.array(T)
     #Cut Lowpass filter effects away to 20 MHz
     if usable_bandwidth < fs:
-        unusable_bins = round(64 * (1-usable_bandwidth/fs))
+        unusable_bins = round(np.shape(h)[1]/2 * (1-usable_bandwidth/fs))
         T = T[:, unusable_bins:-unusable_bins]
     return T
 
@@ -82,18 +82,12 @@ def cfo_correction(corr, upsample_factor):
     for idx, x in enumerate(corr_.copy()):
 
         upsampled_function = resample(x, len(x) * upsample_factor)
-        f_max = np.max(abs(upsampled_function))
-        x_max = np.max(abs(x))
-        peak_positions = find_peaks(abs(upsampled_function), 0.9 * f_max, distance = 200 * upsample_factor)[0]
-
-        if len(peak_positions) < batchsize / (2 * 256) or len(peak_positions) > 2*batchsize / 256:
-            print("Bad signal! Could not perform cfo correction!")
-            print("")
-            return corr
-
-        corrected_diff = np.mean(np.diff(peak_positions)) / 256
-        offset =  round(np.mean(peak_positions % corrected_diff)) % upsample_factor
-        resampled_axis = np.rint(np.arange(offset, len(upsampled_function)-1, corrected_diff)).astype(int)
+        h_max = []
+        for offset in range(upsample_factor):
+            resampled_axis = np.rint(np.arange(offset, len(upsampled_function)-1, upsample_factor)).astype(int)
+            h_max.append(np.max(abs(upsampled_function[resampled_axis])))
+        offset = np.argmax(h_max)
+        resampled_axis = np.rint(np.arange(offset, len(upsampled_function)-1, upsample_factor)).astype(int)
         new_h = upsampled_function[resampled_axis]
         if len(new_h) >len(x):
             new_h = new_h[:len(x)]
@@ -103,10 +97,10 @@ def cfo_correction(corr, upsample_factor):
     return np.reshape(corrected_corr, np.shape(corr))
 
 def calculate_impulse_response(corr):
-    corr = corr[:,1:-1,:128]
+    corr = corr[:,1:-1,:]
     return np.mean(corr, axis = 1)
 
-def calculate_B_coh(T, threshold, stepsize = 10):
+def calculate_B_coh_cyclic_correlate(T, threshold, stepsize = 10):
     if not 0<=threshold<=1:
         print("When calculating B_coh: threshold value has to be between 0 and 1")
     B_coh = []
@@ -124,7 +118,7 @@ def calculate_B_coh(T, threshold, stepsize = 10):
     return moving_average(B_coh, batches_per_value, stepsize)
 
 
-def calculate_T_coh(T_, threshold):
+def calculate_T_coh_cyclic_correlate(T_, threshold):
     T = np.swapaxes(T_,0,1)
     T_coh = []
     stepsize = 1 if batches_per_value/10 < 1 else  round(batches_per_value/10)
@@ -143,6 +137,79 @@ def calculate_T_coh(T_, threshold):
         T_coh.append(np.mean(T_coh_f))
 
     return np.array(T_coh)
+
+def calculate_B_coh_auto_correlate(T, threshold, stepsize = 10):
+    if not 0<=threshold<=1:
+        print("When calculating B_coh: threshold value has to be between 0 and 1")
+    B_coh = []
+    for t in T:
+        freq_corr_function = np.fft.fftshift(np.correlate(t,t,mode = "full") )
+        freq_corr_max = abs( np.max(freq_corr_function) )
+
+        x = ( np.argmax( abs(freq_corr_function) < threshold * freq_corr_max ))
+        if np.min(abs(freq_corr_function)) > threshold * freq_corr_max :
+            B_coh.append(np.min([fs, 20e6]))
+        else:
+            B_coh.append(x * 2*(np.min([fs, 20e6]))/len(freq_corr_function))
+
+    B_coh = np.array(B_coh)
+    return moving_average(B_coh, batches_per_value, stepsize)
+
+def calculate_T_coh_auto_correlate(T_, threshold):
+    T = np.swapaxes(T_,0,1)
+    T_coh = []
+    stepsize = 1 if batches_per_value/10 < 1 else  round(batches_per_value/10)
+    for t in range (0, int(number_of_batches-batches_per_value), stepsize):
+        T_coh_f = []
+        for f in T:
+            time_corr_function = np.fft.fftshift(np.correlate(f[t:t+batches_per_value],f[t:t+batches_per_value], mode = "full") )
+
+            time_corr_max = abs( np.max(time_corr_function) )
+
+            x = ( np.argmax( abs(time_corr_function) < threshold * time_corr_max ))
+            if np.min(abs(time_corr_function)) > threshold * time_corr_max :
+                T_coh_f.append(windowsize_in_sec)
+            else:
+                T_coh_f.append(x * 2*windowsize_in_sec/len(time_corr_function))
+        T_coh.append(np.mean(T_coh_f))
+
+    return np.array(T_coh)
+
+def calculate_B_coh_sliding_window():
+    pass
+def calculate_T_coh_sliding_window(T_, threshold):
+    T = np.swapaxes(T_,0,1)
+    T_coh = []
+    stepsize = 1 if batches_per_value/10 < 1 else  round(batches_per_value/10)
+    for f in T:
+        T_coh_f = []
+        for t in range (0, int(number_of_batches-batches_per_value), stepsize):
+            window = f[t:t+batches_per_value]
+            function_window = np.roll(f, -t+batches_per_value)[0:3*batches_per_value]
+            time_corr_function = np.fft.fftshift(np.correlate(function_window,window, mode = "full"))
+            #plt.figure()
+            #plt.plot(window)
+            #plt.plot(function_window)
+            #plt.plot(5*time_corr_function)
+            #plt.show()
+            time_corr_max = time_corr_function[0]
+            x = ( np.argmax( abs(time_corr_function) < threshold * time_corr_max ))
+            T_coh_f.append(min(x * 2*windowsize_in_sec/len(time_corr_function), windowsize_in_sec))
+        T_coh.append(np.mean(T_coh_f))
+
+    return np.array(T_coh)
+
+
+def calculate_B_coh_power_delay_spread(h, threshold):
+    Td = []
+    for h_t in h:
+        Td.append(moment(h_t, moment = 2))
+    Td = np.array(Td)
+    if threshold == 0.5:
+        return 0.2/Td
+    if threshold == 0.9:
+        return 0.02/Td
+
 
 
 
@@ -167,8 +234,10 @@ if __name__ == "__main__":
         recieved_power_dbfs =0
         batches_per_value = round(windowsize_in_sec/capture_interval)
         if ".dat"in file:
+            print("Reading from dat file")
             data = np.fromfile(open(f"{folder}/{file}"), dtype=np.complex64)
             zc_seq = np.load('zc_sequence.npy')
+            zc_len = len(zc_seq)
 
             batches = devide_in_batches(data, batchsize)
             number_of_batches = np.shape(batches)[0]
@@ -182,12 +251,13 @@ if __name__ == "__main__":
             h = calculate_impulse_response(corr_cfo_corrected)
             save_impulse_response(h,recieved_power_dbfs, date_of_measurement, time_of_measurement, fc, fs, batchsize, capture_interval, name_of_measurement, f'{folder}/{file}')
         if ".npz" in file:
+            print("Reading from npz file")
             meas = np.load(f'{folder}/{file}',allow_pickle=True)
             h = meas["name1"]
             recieved_power_dbfs = meas["name2"]
             number_of_batches = len(recieved_power_dbfs)
         time = np.arange(0,capture_interval*len(recieved_power_dbfs), capture_interval)
-        delay = np.linspace(0, 128 / fs, 128)
+        delay = np.linspace(0, np.shape(h)[1] / fs, np.shape(h)[1])
         if np.max(recieved_power_dbfs) > -10:
             print("Warning: The recieved signal power exceeds -10 dBFS. Clipping may occour!")
             print("")
@@ -196,12 +266,12 @@ if __name__ == "__main__":
 
 
         T = calculate_timevariant_transferfunction(h)
-        cutoff_frequency = (1 - ( (1-np.shape(T)[1]) / 128 ) *fs)/2
+        cutoff_frequency = (1 - ( (1-np.shape(T)[1]) / np.shape(h)[1] ) *fs)/2
         frequency = np.linspace( -cutoff_frequency, cutoff_frequency, np.shape(T)[1])
         plot_timevariant_transferfunction(T, time, frequency)
 
-        B_coh_50 = calculate_B_coh(T, 0.5)
-        B_coh_90 = calculate_B_coh(T, 0.9)
+        B_coh_50 = calculate_B_coh_power_delay_spread(T, 0.5)
+        B_coh_90 = calculate_B_coh_power_delay_spread(T, 0.9)
 
         signal_time = capture_interval * number_of_batches
         time_of_movavg_filter = batches_per_value * capture_interval
@@ -217,8 +287,8 @@ if __name__ == "__main__":
         #T_coh
         windowsize_in_sec = 1
         batches_per_value = round(windowsize_in_sec/capture_interval)
-        T_coh_50 = calculate_T_coh(T, 0.5)
-        T_coh_90 = calculate_T_coh(T, 0.9)
+        T_coh_50 = calculate_T_coh_sliding_window(T, 0.5)
+        T_coh_90 = calculate_T_coh_sliding_window(T, 0.9)
 
         time = np.linspace(windowsize_in_sec/2, signal_time - windowsize_in_sec/2, len(T_coh_50))
 

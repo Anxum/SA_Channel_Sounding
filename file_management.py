@@ -69,8 +69,11 @@ def choose_measurement():
             path = np.array([df["Path to condensed measurement"].iloc[-1]]) # Choose the latest measurement
             name = df["Name"].iloc[-1]
 
-        if path[0] == "-" or "?" in name:
-            path = np.array(df[df["Name"] == name]["Path to file"])
+        try:
+            if path[0] == "-" or "?" in option:
+                path = np.array(df[df["Name"] == name]["Path to file"])
+        except:
+            pass
 
         if path.size == 0:
             print("The name you entered does not exist!")
@@ -87,12 +90,12 @@ def choose_measurement():
 def save_impulse_response(h,recieved_power_dbfs, date, time, fc, fs, batchsize, capture_interval, name_of_measurement, path_to_raw_measurement):
     df = pd.read_csv("../list_of_measurements.csv", index_col = 0)
     measurement_idx = df.index[df["Name"] == name_of_measurement].tolist()[0]
-    if df["Path to condensed measurement"].iloc[measurement_idx]  == "-":
-        filename = f"{name_of_measurement}_{date}_{time}_{int(fc * 1e-6)}MHz_{int(fs *1e-6)}MSps_{batchsize}S_{int(capture_interval * 1e3)}ms"
-        folder = "../condensed_measurements"
-        df.loc[measurement_idx, "Path to condensed measurement"] = f"{folder}/{filename}.npz"
-        np.savez(f"{folder}/{filename}", name1 = h, name2 = recieved_power_dbfs)
-        df.to_csv("../list_of_measurements.csv")
+    #if df["Path to condensed measurement"].iloc[measurement_idx]  == "-":
+    filename = f"{name_of_measurement}_{date}_{time}_{int(fc * 1e-6)}MHz_{int(fs *1e-6)}MSps_{batchsize}S_{int(capture_interval * 1e3)}ms"
+    folder = "../condensed_measurements"
+    df.loc[measurement_idx, "Path to condensed measurement"] = f"{folder}/{filename}.npz"
+    np.savez(f"{folder}/{filename}", name1 = h, name2 = recieved_power_dbfs)
+    df.to_csv("../list_of_measurements.csv")
 
 
 def register_measurements():
@@ -192,5 +195,5 @@ def register_measurements():
             f = open("../measurement_registration_ignore.txt", "a")
             f.write(f"{file}\n")
             f.close()
-        if option == "5": # End the program
+        if option == "5": # Skip registration
             break
