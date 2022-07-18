@@ -34,7 +34,7 @@ def plot_B_coh(b_50, b_90, time, max_y):
     plt.plot(time, b_90, "-r", label = 'B_coh_90%(t)' )
     plt.xlabel("Time [s]")
     plt.ylabel("B_coh [Hz]")
-    plt.title("Coherence bandwidths over time with moving average filter applied")
+    plt.title("Coherence bandwidth over time")
     plt.ylim([0, 1.02*max_y])
     plt.legend(loc="best")
 
