@@ -30,8 +30,8 @@ def plot_timevariant_transferfunction(T, time, frequency):
 
 def plot_B_coh(b_50, b_90, time, max_y):
     plt.figure(num="B_coh(t)")
-    plt.plot(time, b_50, "-b", label = 'B_coh_50%(t)' )
-    plt.plot(time, b_90, "-r", label = 'B_coh_90%(t)' )
+    plt.plot(time, abs(b_50), "-b", label = 'B_coh_50%(t)' )
+    plt.plot(time, abs(b_90), "-r", label = 'B_coh_90%(t)' )
     plt.xlabel("Time [s]")
     plt.ylabel("B_coh [Hz]")
     plt.title("Coherence bandwidth over time")
@@ -40,8 +40,8 @@ def plot_B_coh(b_50, b_90, time, max_y):
 
 def plot_T_coh(t_50, t_90, time, max_y):
     plt.figure(num="T_coh(t)")
-    plt.plot(time, t_50, "-b", label = 'T_coh_50%(t)' )
-    plt.plot(time, t_90, "-r", label = 'T_coh_90%(t)' )
+    plt.plot(time, abs(t_50), "-b", label = 'T_coh_50%(t)' )
+    plt.plot(time, abs(t_90), "-r", label = 'T_coh_90%(t)' )
     plt.xlabel("Time [s]")
     plt.ylabel("T_coh [s]")
     plt.ylim([0, 1.02 * max_y])
