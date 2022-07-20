@@ -222,89 +222,33 @@ def calculate_impulse_response(corr):
     corr = corr[:,1:-1,:] # Cut away edge effects of the batches
     return np.mean(corr, axis = 1) # average over the multiple impulse responses per batch
 
-def calculate_B_coh_cyclic_correlate(T, threshold):
+def calculate_B_coh(T, threshold, mode = "auto"):
     '''
     description:
-        Calculate the coherence bandwidth with the cyclic correlation function.
+        Calculate the coherence bandwidth as a function of time.
 
     inputs:
         T                -  The timevariant transferfunction. A 2D-Array: the two axis represent:
                             0 - Batchnumber; 1 - Frequency bins of the batch
         threshold        -  The threshold value as a factor to the maximum value of the autocorrelation function
                             up to which the function is still considered coherent
+        mode             -  calculate B_coh either with autocorrelation function("auto") or
+                            the cyclic corelation function ("cyclic")
 
     returns:
         B_coh            - The coherence bandwith as a function of time
     '''
+
     if not 0<=threshold<=1:
         print("When calculating B_coh: threshold value has to be between 0 and 1")
     B_coh = np.zeros(np.shape(T)[0])
     for idx_t, t in enumerate(T):
-        func = t - cyclic_moving_average(t, int(windowsize_in_sec/capture_interval))
-        freq_corr_function = np.fft.fftshift( cyclic_auto_correlate(func) )
-        freq_corr_max = abs( np.max(freq_corr_function) )
-
-        x = ( np.argmax( abs(freq_corr_function) < threshold * freq_corr_max ))
-        if np.min(abs(freq_corr_function)) > threshold * freq_corr_max :
-            B_coh[idx_t] = np.min([fs, 20e6])
-        else:
-            B_coh[idx_t] = x * 2*(np.min([fs, 20e6]))/len(freq_corr_function)
-    return B_coh
-
-
-def calculate_T_coh_cyclic_correlate(T, threshold):
-    '''
-    description:
-        Calculate the coherence time with the cyclic correlation function
-
-    inputs:
-        T                -  The timevariant transferfunction. A 2D-Array: the two axis represent:
-                            0 - Batchnumber; 1 - Frequency bins of the batch
-        threshold        -  The threshold value as a factor to the maximum value of the autocorrelation function
-                            up to which the function is still considered coherent
-
-    returns:
-        T_coh            - The coherence time as a function of time
-    '''
-    T = np.swapaxes(T,0,1)
-    r = range(0, int(number_of_batches-batches_per_value))
-    T_coh = np.zeros(len(r))
-    for idx_t, t in enumerate(r):
-        T_coh_f = np.zeros(np.shape(T)[0])
-        for idx_f, f in enumerate(T):
-            func = f[t:t+batches_per_value] - cyclic_moving_average(f[t:t+batches_per_value], int(windowsize_in_sec/capture_interval))
-            time_corr_function = np.fft.fftshift( cyclic_auto_correlate(func) )
-
-            time_corr_max = abs( np.max(time_corr_function) )
-
-            x = ( np.argmax( abs(time_corr_function) < threshold * time_corr_max ))
-            if np.min(abs(time_corr_function)) > threshold * time_corr_max :
-                T_coh_f[idx_f] = windowsize_in_sec
-            else:
-                T_coh_f[idx_f] = x * 2*windowsize_in_sec/len(time_corr_function)
-        T_coh[idx_t] = np.mean(T_coh_f)
-
-    return T_coh
-
-def calculate_B_coh_auto_correlate(T, threshold):
-    '''
-    description:
-        Calculate the coherence bandwidth with the auto correlation function.
-
-    inputs:
-        T                -  The timevariant transferfunction. A 2D-Array: the two axis represent:
-                            0 - Batchnumber; 1 - Frequency bins of the batch
-        threshold        -  The threshold value as a factor to the maximum value of the autocorrelation function
-                            up to which the function is still considered coherent
-
-    returns:
-        B_coh            - The coherence bandwith as a function of time
-    '''
-    if not 0<=threshold<=1:
-        print("When calculating B_coh: threshold value has to be between 0 and 1")
-    B_coh = np.zeros(np.shape(T)[0])
-    for idx_t, t in enumerate(T):
-        freq_corr_function = np.fft.fftshift(np.correlate(t,t,mode = "full") )
+        freq_corr_function = []
+        if mode == "cyclic":
+            func = t - cyclic_moving_average(t, int(windowsize_in_sec/capture_interval))
+            freq_corr_function = np.fft.fftshift( cyclic_auto_correlate(func))
+        if mode == "auto":
+            freq_corr_function = np.fft.fftshift(np.correlate(t,t,mode = "full"))
         freq_corr_max = abs( np.max(freq_corr_function) )
 
         x =  np.argmax( abs(freq_corr_function) < threshold * freq_corr_max )
@@ -312,73 +256,63 @@ def calculate_B_coh_auto_correlate(T, threshold):
             B_coh[idx_t] = np.min([fs, 20e6])
         else:
             B_coh[idx_t] = x * 2*(np.min([fs, 20e6]))/len(freq_corr_function)
-
     return B_coh
 
-def calculate_T_coh_auto_correlate(T, threshold):
+
+def calculate_T_coh(T, threshold, mode = "auto"):
     '''
     description:
-        Calculate the coherence time with the auto correlation function
+        Calculate the coherence time as a function of time
 
     inputs:
         T                -  The timevariant transferfunction. A 2D-Array: the two axis represent:
                             0 - Batchnumber; 1 - Frequency bins of the batch
         threshold        -  The threshold value as a factor to the maximum value of the autocorrelation function
                             up to which the function is still considered coherent
+        mode             -  calculate T_coh either with autocorrelation function("auto"),
+                            the cyclic corelation function ("cyclic") or the sliding window method ("slide")
+                            (picking a time window and slide and correlate it against the original function)
 
     returns:
         T_coh            - The coherence time as a function of time
     '''
+
     T = np.swapaxes(T,0,1)
-    r = range(0, int(number_of_batches-batches_per_value))
+    r = range(0, int(number_of_batches-batches_per_value),int(windowsize_in_sec/(2*capture_interval)))
     T_coh = np.zeros(len(r))
     for idx_t, t in enumerate(r):
         T_coh_f = np.zeros(np.shape(T)[0])
         for idx_f, f in enumerate(T):
-            time_corr_function = np.fft.fftshift(np.correlate(f[t:t+batches_per_value],f[t:t+batches_per_value], mode = "full") )
+            time_corr_max = 0
+            time_corr_function = []
 
-            time_corr_max = abs( np.max(time_corr_function) )
+            if mode == "auto":
+                time_corr_function = np.fft.fftshift( np.correlate( f[t:t+batches_per_value], f[t:t+batches_per_value], mode = "full" ) )
+                time_corr_max = abs(np.max(time_corr_function))
 
-            x = ( np.argmax( abs(time_corr_function) < threshold * time_corr_max ))
+            if mode == "cyclic":
+                func = f[t:t+batches_per_value] - cyclic_moving_average(f[t:t+batches_per_value], int(windowsize_in_sec/capture_interval))
+                time_corr_function = np.fft.fftshift( cyclic_auto_correlate(func) )
+                time_corr_max = abs( np.max(time_corr_function) )
+
+            if mode == "slide":
+                window = f[t:t+batches_per_value] - np.mean(f[t:t+batches_per_value])
+                function_window = np.roll(f, -t+batches_per_value)[0:3*batches_per_value]
+                function_window = function_window - cyclic_moving_average(function_window, batches_per_value)
+                time_corr_function = np.fft.fftshift(np.correlate(function_window,window, mode = "full"))
+                time_corr_max = time_corr_function[int(len(time_corr_function)/2)]
+
+            coherece_time = ( np.argmax( abs(time_corr_function) < threshold * time_corr_max ))
             if np.min(abs(time_corr_function)) > threshold * time_corr_max :
                 T_coh_f[idx_f] = windowsize_in_sec
             else:
-                T_coh_f[idx_f] = x * 2*windowsize_in_sec/len(time_corr_function)
+                T_coh_f[idx_f] = min(coherece_time * 2*windowsize_in_sec/len(time_corr_function), windowsize_in_sec)
         T_coh[idx_t] = np.mean(T_coh_f)
 
     return T_coh
 
-def calculate_T_coh_sliding_window(T, threshold):
-    '''
-    description:
-        Calculate the coherence time by picking a time window and slide it against the original function
 
-    inputs:
-        T                -  The timevariant transferfunction. A 2D-Array: the two axis represent:
-                            0 - Batchnumber; 1 - Frequency bins of the batch
-        threshold        -  The threshold value as a factor to the maximum value of the autocorrelation function
-                            up to which the function is still considered coherent
 
-    returns:
-        T_coh            - The coherence time as a function of time
-    '''
-    T = np.swapaxes(T,0,1)
-    r = range(0, int(number_of_batches-batches_per_value))
-    T_coh = np.zeros(len(r))
-    for idx_t, t in enumerate(r):
-        T_coh_f = np.zeros(np.shape(T)[0])
-        for idx_f, f in enumerate(T):
-            window = f[t:t+batches_per_value]
-            window = window - np.mean(window)
-            function_window = np.roll(f, -t+batches_per_value)[0:3*batches_per_value]
-            function_window = function_window - cyclic_moving_average(function_window, batches_per_value)
-            time_corr_function = np.fft.fftshift(np.correlate(function_window,window, mode = "full"))
-            time_corr_max = time_corr_function[0]
-            x =  np.argmax( abs(time_corr_function) < threshold * time_corr_max )
-            T_coh_f[idx_f] = min(x * 2*windowsize_in_sec/len(time_corr_function), windowsize_in_sec)
-        T_coh[idx_t] = np.mean(T_coh_f)
-
-    return T_coh
 
 
 def calculate_B_coh_power_delay_spread(h, threshold):
@@ -387,8 +321,8 @@ def calculate_B_coh_power_delay_spread(h, threshold):
         Calculate the coherence bandwidth with by estimating it with thepower delay spread
 
     inputs:
-        T                -  The timevariant transferfunction. A 2D-Array: the two axis represent:
-                            0 - Batchnumber; 1 - Frequency bins of the batch
+        h                -  The impulse response of the measurement. A 2D-Array the axis reptrsent:
+                            0 - batchnumber; 1 - time delay of impulse response
         threshold        -  The threshold value as a factor to the maximum value of the autocorrelation function
                             up to which the function is still considered coherent
 
@@ -404,14 +338,13 @@ def calculate_B_coh_power_delay_spread(h, threshold):
     if threshold == 0.9:
         return 0.02/Td
 
-
-
-
 if __name__ == "__main__":
 
     # TODO: validieren mit synthetischen Daten(bekannte Kohärenz BB, Kohärenzzseit Siehe Matlab)
 
     register_measurements()
+    windowsize_in_sec = 1
+    batches_per_value = round(windowsize_in_sec/capture_interval)
     while True:
         folder, file, name_of_measurement = choose_measurement()
         print("===========================================================================")
@@ -458,14 +391,13 @@ if __name__ == "__main__":
         plot_recieved_power(recieved_power_dbfs, time)
         plot_impulse_response(h, time, delay)
 
-
         T = calculate_timevariant_transferfunction(h)
         cutoff_frequency = (1 - ( (1-np.shape(T)[1]) / np.shape(h)[1] ) *fs)/2
         frequency = np.linspace( -cutoff_frequency, cutoff_frequency, np.shape(T)[1])
         plot_timevariant_transferfunction(T, time, frequency)
 
-        B_coh_50 = calculate_B_coh_cyclic_correlate(T, 0.5)
-        B_coh_90 = calculate_B_coh_cyclic_correlate(T, 0.9)
+        B_coh_50 = calculate_B_coh(T, 0.5, mode = "cyclic")
+        B_coh_90 = calculate_B_coh(T, 0.9, mode = "cyclic")
 
         signal_time = capture_interval * number_of_batches
         time_of_movavg_filter = batches_per_value * capture_interval
@@ -479,10 +411,10 @@ if __name__ == "__main__":
         print(f'99.9% of values of B_coh_90 lie in between {B_coh_90_conf_interval_999}[Hz]')
 
         #T_coh
-        windowsize_in_sec = 1
-        batches_per_value = round(windowsize_in_sec/capture_interval)
-        T_coh_50 = calculate_T_coh_auto_correlate(T, 0.5)
-        T_coh_90 = calculate_T_coh_auto_correlate(T, 0.9)
+
+
+        T_coh_50 = calculate_T_coh(T, 0.5, mode = "slide")
+        T_coh_90 = calculate_T_coh(T, 0.9, mode = "slide")
 
         time = np.linspace(windowsize_in_sec/2, signal_time - windowsize_in_sec/2, len(T_coh_50))
 
