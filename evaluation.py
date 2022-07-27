@@ -39,6 +39,7 @@ def confidence_interval(data, percentage):
     HIW = sigma * np.sqrt(var/n)
     return mean, np.array([mean - HIW, mean + HIW])
 
+
 def cyclic_auto_correlate(a):
     '''
     description:
@@ -136,7 +137,7 @@ def correlate_batches(batches):
     '''
     corr = batches
     for idx,c in enumerate(corr.copy()):
-        c = np.correlate(c, zc_seq, mode = "same")/batchsize # correlate every batch with zc-sequence
+        c = np.correlate(zc_seq, c, mode = "same")/batchsize # correlate every batch with zc-sequence
         corr[idx] = c
     corr = np.reshape(corr, (number_of_batches, int(round(batchsize/zc_len)), zc_len)) # rearrange into 3D-array
     return corr
@@ -184,27 +185,68 @@ def cfo_correction(corr, upsample_factor):
     batchsize = int(np.shape(corr)[1] * np.shape(corr)[2]) # batchsize = number of impulse responses * length of impulse responses
     corr_ = np.reshape(corr, (np.shape(corr)[0], batchsize)) # rearrange data in 2D-Array
     corrected_corr = np.zeros(np.shape(corr_), dtype =np.complex64)
-    for idx, x in enumerate(corr_.copy()): # for every batch:
-        upsampled_function = resample(x, len(x) * upsample_factor) # Perform sinc interpolation
+    for idx, batch in enumerate(corr_.copy()): # for every batch:
+        upsampled_function = resample(batch, len(batch) * upsample_factor) # Perform sinc interpolation
         h_max = []
         for offset in range(upsample_factor): # find the offset value with the highest maximum value
             resampled_axis = np.rint(np.arange(offset, len(upsampled_function)-1, upsample_factor)).astype(int)
             h_max.append(np.max(abs(upsampled_function[resampled_axis])))
         offset = np.argmax(h_max)
+        #plt.figure()
+        #plt.plot(abs(upsampled_function))
         resampled_axis = np.rint(np.arange(offset, len(upsampled_function)-1, upsample_factor)).astype(int) #create axis for downsampling
+        #plt.vlines(resampled_axis,0,0.006)
+        #plt.show()
         new_h = upsampled_function[resampled_axis] # downsample the data
-        if len(new_h) >len(x): # crop the function at the end, if its too long
-            new_h = new_h[:len(x)]
-        if len(new_h) < len(x): # add 0s to the beginning of the function, if it's too short
-            new_h = np.pad(new_h, (0,len(x) - len(new_h)), 'constant')
+        if len(new_h) >len(batch): # crop the function at the end, if its too long
+            new_h = new_h[:len(batch)]
+        if len(new_h) < len(batch): # add 0s to the beginning of the function, if it's too short
+            new_h = np.pad(new_h, (0,len(batch) - len(new_h)), 'constant')
         corrected_corr[idx] = new_h
     corrected_corr = np.reshape(corrected_corr, np.shape(corr)) # rearrange back into a 3D-Array
-    for idx_batch,batch in enumerate(corrected_corr.copy()): # Allign all maximums of the impulse responses
+    for idx_batch, batch in enumerate(corrected_corr.copy()): # Allign all maximums of the impulse responses
         for idx_response, response in enumerate(batch):
             shift = -np.argmax(abs(response)) + 10 # All maximums will be alligned at this index
             response = np.roll(response, shift)
             corrected_corr[idx_batch, idx_response] = response
     return corrected_corr
+
+
+
+def cfo_estimation(batches):
+    '''
+    description:
+        Perfom a cfo estimation with a best linear unbiased estimator (blue) see
+        https://en.wikipedia.org/wiki/Carrier_frequency_offset#Blue for explaination.
+
+    inputs:
+        batches          -  A 2D-Array containing the batches of the measurement.
+                            The axis represent: 0 - batchnumber; 1 - time index in batch
+    returns:
+        offsets          -  A 1D-Array, containing the estimated relative error of the
+                            sampling frequency offset for each batch
+    '''
+    N = np.shape(batches)[1]
+    R = zc_len
+    U = int(round(N/R))
+    K = int(round(U/2))
+    points_of_evaluation = np.array([int(u*R+N-1) for u in range(K+1)])
+    scaling_array = np.array([1/(N-u*R) for u in range(K+1)])
+    weights = np.array([3*( (U-u) * (U-u+1) - K*(U-K) )/( K*( 4*K*K - 6*U*K + 3*U*U -1 ) ) for u in range(1, K+1)])
+    offsets = np.zeros(np.shape(batches)[0])
+    for idx_batch, batch in enumerate(batches):
+        corr = np.correlate(batch, batch, mode = "full")
+        phi = np.multiply(corr[points_of_evaluation], scaling_array)
+        arg_phi = np.angle(phi)
+        arg_diff = np.diff(arg_phi) #%(2*np.pi)
+        weight_arg_diff = np.multiply(arg_diff, weights)
+        offset = U/(2*np.pi) * np.sum(weight_arg_diff)
+        offsets[idx_batch] = offset
+    plt.figure()
+    plt.plot(offsets)
+    plt.show()
+    return offsets
+
 
 def calculate_impulse_response(corr):
     '''
@@ -259,7 +301,7 @@ def calculate_B_coh(T, threshold, mode = "auto"):
     return B_coh
 
 
-def calculate_T_coh(T, threshold, mode = "auto"):
+def calculate_T_coh(T, threshold, mode = "auto", points_per_window = 2):
     '''
     description:
         Calculate the coherence time as a function of time
@@ -272,13 +314,15 @@ def calculate_T_coh(T, threshold, mode = "auto"):
         mode             -  calculate T_coh either with autocorrelation function("auto"),
                             the cyclic corelation function ("cyclic") or the sliding window method ("slide")
                             (picking a time window and slide and correlate it against the original function)
+        points_per_window-  Determines the number of points of the T_coh function. The number of points is the number
+                            of windows that fit inside the function side by side, muliplied with points_per_window
 
     returns:
         T_coh            - The coherence time as a function of time
     '''
 
     T = np.swapaxes(T,0,1)
-    r = range(0, int(number_of_batches-batches_per_value),int(windowsize_in_sec/(2*capture_interval)))
+    r = range(0, int(number_of_batches-batches_per_value),int(windowsize_in_sec/(points_per_window * capture_interval)))
     T_coh = np.zeros(len(r))
     for idx_t, t in enumerate(r):
         T_coh_f = np.zeros(np.shape(T)[0])
@@ -344,10 +388,9 @@ if __name__ == "__main__":
 
     register_measurements()
     windowsize_in_sec = 1
-    batches_per_value = round(windowsize_in_sec/capture_interval)
+
     while True:
         folder, file, name_of_measurement = choose_measurement()
-        print("===========================================================================")
         if folder == "" and file == "" and name_of_measurement == "":
             break
         fc, fs, batchsize, capture_interval, date_of_measurement, time_of_measurement = read_meta_data(file)
@@ -359,14 +402,14 @@ if __name__ == "__main__":
         print("")
         h = 0
         recieved_power_dbfs =0
-        batches_per_value = round(windowsize_in_sec/capture_interval)
+        zc_seq = np.load('zc_sequence.npy')
+        zc_len = len(zc_seq)
         if ".dat"in file:
             print("Reading from dat file")
             data = np.fromfile(open(f"{folder}/{file}"), dtype=np.complex64)
-            zc_seq = np.load('zc_sequence.npy')
-            zc_len = len(zc_seq)
 
             batches = devide_in_batches(data, batchsize)
+            cfo_estimation(batches)
             number_of_batches = np.shape(batches)[0]
             time = np.arange(0,capture_interval*batchsize, capture_interval)
 
@@ -383,8 +426,13 @@ if __name__ == "__main__":
             h = meas["name1"]
             recieved_power_dbfs = meas["name2"]
             number_of_batches = len(recieved_power_dbfs)
+        print("")
+        dbfs_mean, dbfs_interval = confidence_interval(recieved_power_dbfs, 0.9)
+        print(f"90% of powers lie between{dbfs_interval}[dBFS]")
+        batches_per_value = round(windowsize_in_sec/capture_interval)
         time = np.arange(0,capture_interval*len(recieved_power_dbfs), capture_interval)
         delay = np.linspace(0, np.shape(h)[1] / fs, np.shape(h)[1])
+
         if np.max(recieved_power_dbfs) > -10:
             print("Warning: The recieved signal power exceeds -10 dBFS. Clipping may occour!")
             print("")
@@ -396,33 +444,32 @@ if __name__ == "__main__":
         frequency = np.linspace( -cutoff_frequency, cutoff_frequency, np.shape(T)[1])
         plot_timevariant_transferfunction(T, time, frequency)
 
-        B_coh_50 = calculate_B_coh(T, 0.5, mode = "cyclic")
-        B_coh_90 = calculate_B_coh(T, 0.9, mode = "cyclic")
+        #B_coh
+        B_coh_50 = calculate_B_coh(T, 0.5, mode = "auto")
+        B_coh_90 = calculate_B_coh(T, 0.9, mode = "auto")
 
         signal_time = capture_interval * number_of_batches
-        time_of_movavg_filter = batches_per_value * capture_interval
-        time = np.linspace(time_of_movavg_filter/2, signal_time-time_of_movavg_filter/2, len(B_coh_50))
+        time = np.linspace(0, signal_time, len(B_coh_50))
 
-        plot_B_coh(B_coh_50, B_coh_90, time, np.min([fs,20e6]))
+        plot_B_coh(B_coh_50, B_coh_90, time, min(fs,20e6))
 
-        B_coh_50_mean, B_coh_50_conf_interval_999 = confidence_interval(B_coh_50, 0.999)
-        B_coh_90_mean, B_coh_90_conf_interval_999 = confidence_interval(B_coh_90, 0.999)
-        print(f'99.9% of values of B_coh_50 lie in between {B_coh_50_conf_interval_999}[Hz]')
-        print(f'99.9% of values of B_coh_90 lie in between {B_coh_90_conf_interval_999}[Hz]')
+        B_coh_50_mean, B_coh_50_conf_interval = confidence_interval(B_coh_50, 0.9)
+        B_coh_90_mean, B_coh_90_conf_interval = confidence_interval(B_coh_90, 0.9)
+        print(f'90% of values of B_coh_50 lie in between {B_coh_50_conf_interval}[Hz]')
+        print(f'90% of values of B_coh_90 lie in between {B_coh_90_conf_interval}[Hz]')
 
         #T_coh
-
-
-        T_coh_50 = calculate_T_coh(T, 0.5, mode = "slide")
-        T_coh_90 = calculate_T_coh(T, 0.9, mode = "slide")
+        T_coh_50 = calculate_T_coh(T, 0.5, mode = "auto", points_per_window = 1)
+        T_coh_90 = calculate_T_coh(T, 0.9, mode = "auto", points_per_window = 1)
 
         time = np.linspace(windowsize_in_sec/2, signal_time - windowsize_in_sec/2, len(T_coh_50))
 
         plot_T_coh(T_coh_50, T_coh_90, time, windowsize_in_sec)
 
-        T_coh_50_mean, T_coh_50_conf_interval_999 = confidence_interval(T_coh_50, 0.999)
-        T_coh_90_mean, T_coh_90_conf_interval_999 = confidence_interval(T_coh_90, 0.999)
-        print(f'99.9% of values of T_coh_50 lie in between {T_coh_50_conf_interval_999}[s]')
-        print(f'99.9% of values of T_coh_90 lie in between {T_coh_90_conf_interval_999}[s]')
+        T_coh_50_mean, T_coh_50_conf_interval = confidence_interval(T_coh_50, 0.9)
+        T_coh_90_mean, T_coh_90_conf_interval = confidence_interval(T_coh_90, 0.9)
+        print(f'90% of values of T_coh_50 lie in between {T_coh_50_conf_interval}[s]')
+        print(f'90% of values of T_coh_90 lie in between {T_coh_90_conf_interval}[s]')
         print("")
         plt.show()
+        break

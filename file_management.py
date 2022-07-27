@@ -60,6 +60,7 @@ def choose_measurement():
             continue
 
         if option == "3": # Exit Program
+            print("===========================================================================")
             return "","",""
 
         name = option.split("?")[0]                   #A Name has been entered
@@ -85,6 +86,7 @@ def choose_measurement():
     split_idx = path[0].rfind('/')
     folder = path[0][:split_idx]
     file = path[0][split_idx+1:]
+    print("===========================================================================")
     return folder, file, name
 
 def save_impulse_response(h,recieved_power_dbfs, date, time, fc, fs, batchsize, capture_interval, name_of_measurement, path_to_raw_measurement):
